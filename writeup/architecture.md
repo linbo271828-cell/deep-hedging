@@ -1,363 +1,432 @@
-# Module Architecture — Deep Hedging Sprint
+# Module Architecture — Deep Hedging Lab
 
-This document locks the module-boundary decisions for this project.
-It is the authoritative reference when there is any doubt about where logic belongs.
+This document locks the module-boundary decisions for Deep Hedging Lab.
+It supersedes the v0.1 architecture.md for the sprint project.
 
-Last updated: initial architecture lock (Days 1-2 complete).
+Last updated: Phase 0 architecture migration (Deep Hedging Lab scaffold).
 
 ---
 
 ## Guiding Principles
 
-1. Library code belongs in `src/`. Experiment scripts belong in `experiments/`. Never mix them.
-2. Each module owns exactly one concern. If two modules need the same logic, it belongs in the
-   module with the lower-level concern, and the other imports it.
-3. Pure functions are preferred over classes. State (neural network weights, optimizer state)
+1. Library code lives in `src/`. Experiment entrypoints live in `experiments/`. Never mix them.
+2. Each module owns exactly one concern. If two modules need the same logic, it belongs
+   in the module with the lower-level concern, and the other imports it.
+3. Pure functions are preferred over classes. State (neural weights, optimizer state)
    is acceptable in PyTorch classes only.
-4. There are no "utility" catch-all modules. Every file has a clearly named responsibility.
-5. Transaction cost logic lives in ONE place: `src/hedger.py`. Period.
-6. Risk measure logic lives in ONE place: `src/risk_measures.py`. Period.
+4. Transaction cost logic lives in ONE place: `src/hedging/transaction_costs.py`. Period.
+5. Risk measure logic lives in ONE place: `src/risk/`. Period.
+6. P&L accounting logic lives in ONE place: `src/hedging/pnl.py`. Period.
+7. Payoff definitions live in ONE place: `src/payoffs/`. Period.
+8. Experiment configs live in ONE place: `src/experiments/configs.py`. Period.
+9. Stubs must be typed and raise NotImplementedError — never silently return defaults.
+
+---
+
+## Core Pipeline
+
+```
+MarketConfig / HestonConfig
+        ↓
+src/models/gbm.py or heston.py
+  .sample_paths() → np.ndarray (n_paths, n_steps+1)
+        ↓
+src/payoffs/european.py (or spreads.py, straddles.py)
+  payoff functions (model-independent)
+  Black-Scholes pricing (GBM-specific)
+        ↓
+src/hedging/pnl.py
+  hedge_pnl(paths, delta_fn, time_grid, ...) → P&L array
+        ↓
+  ┌───────────────────────────────────────────────────┐
+  │ Classical path             Neural path             │
+  │ src/hedging/baseline.py    src/neural/train.py     │
+  │ (call_delta as delta_fn)   (HedgeNet.forward)      │
+  └───────────────────┬───────────────────────────────┘
+                      ↓
+              src/risk/cvar.py, entropic.py
+                      ↓
+              src/experiments/summaries.py (SummaryRow)
+                      ↓
+              src/reporting/ → results/reports/
+```
 
 ---
 
 ## Module Responsibilities (Locked)
 
-### src/market.py — Path Generation Only
+### src/models/gbm.py — GBM Path Simulation
 
-Concern: generating Monte Carlo asset price paths.
+Concern: exact-solution GBM path sampling.
 
-Public interface:
-```
+Locked public interface:
+```python
 GBM(s0, mu, sigma)
-  .sample_paths(n_paths, n_steps, T, seed) -> ndarray shape (n_paths, n_steps+1)
+  .sample_paths(n_paths, n_steps, T, seed) -> np.ndarray  # (n_paths, n_steps+1)
   .log_return_mean(T) -> float
   .log_return_variance(T) -> float
 
-time_grid(n_steps, T) -> ndarray length (n_steps+1)
+time_grid(n_steps, T) -> np.ndarray  # length n_steps+1
 
-class MarketModel(Protocol): # for future model extensions (Heston, etc.)
+class MarketModel(Protocol)  # satisfied by GBM and Heston
 ```
 
-Does NOT own: option pricing, hedge deltas, cost accounting, risk measures.
 Status: COMPLETE. Do not modify without strong reason.
+Does NOT own: option pricing, hedging, risk measures.
 
 ---
 
-### src/black_scholes.py — Closed-Form Pricing and Greeks
+### src/models/heston.py — Heston Stochastic Volatility
 
-Concern: Black-Scholes analytical formulas.
+Concern: Heston model path simulation (stub).
 
-Public interface:
-```
-call_price(s, k, r, sigma, tau) -> ndarray | float
-put_price(s, k, r, sigma, tau) -> ndarray | float
-call_delta(s, k, r, sigma, tau) -> ndarray | float
-call_gamma(s, k, r, sigma, tau) -> ndarray | float
-call_vega(s, k, r, sigma, tau) -> ndarray | float
-call_theta(s, k, r, sigma, tau) -> ndarray | float
-call_rho(s, k, r, sigma, tau) -> ndarray | float
+Locked public interface (when implemented):
+```python
+HestonParams(v0, kappa, theta, xi, rho)  # dataclass
+
+Heston(s0, r, params)
+  .sample_paths(n_paths, n_steps, T, seed) -> np.ndarray  # stock prices
+  .sample_paths_with_variance(n_paths, n_steps, T, seed) -> (stock_paths, var_paths)
 ```
 
-All functions are pure: no side effects, no state, no randomness.
-Handles tau=0 via np.where (intrinsic value, not NaN or ZeroDivision).
-Status: COMPLETE. Signatures locked — do not change without updating all callers.
+Status: STUB. Implement in Phase C.
+Simulation method: Andersen QE scheme (preferred) or Euler-Maruyama (acceptable with notice).
 
 ---
 
-### src/hedger.py — P&L Accounting and Classical Hedger
+### src/payoffs/european.py — European Payoffs + Black-Scholes
 
-Concern: computing hedge portfolio P&L across time, including transaction costs.
+Concern: European call/put terminal payoffs AND Black-Scholes closed-form formulas.
 
-This module is the shared P&L engine. Both the classical delta hedger and the neural hedger
-produce P&L by calling functions from this module. This is the highest-risk shared file.
+Locked public interface:
+```python
+call_payoff(s_T, k) -> np.ndarray | float
+put_payoff(s_T, k)  -> np.ndarray | float
 
-Planned public interface:
+call_price(s, k, r, sigma, tau) -> np.ndarray | float
+put_price(s, k, r, sigma, tau)  -> np.ndarray | float
+call_delta(s, k, r, sigma, tau) -> np.ndarray | float
+put_delta(s, k, r, sigma, tau)  -> np.ndarray | float
+call_gamma(s, k, r, sigma, tau) -> np.ndarray | float
+call_vega(s, k, r, sigma, tau)  -> np.ndarray | float
+call_theta(s, k, r, sigma, tau) -> np.ndarray | float
+call_rho(s, k, r, sigma, tau)   -> np.ndarray | float
 ```
+
+Status: COMPLETE.
+Scope note: BS formulas belong here, not in src/models/, because they are
+payoff-specific pricing functions, not general model machinery.
+Under Heston, pricing uses a different formula (characteristic function).
+
+---
+
+### src/payoffs/spreads.py — Vertical Spread Payoffs
+
+Locked public interface (when implemented):
+```python
+call_spread_payoff(s_T, k_lo, k_hi) -> np.ndarray | float
+put_spread_payoff(s_T, k_lo, k_hi)  -> np.ndarray | float
+```
+
+Status: STUB. Implement in Phase B.
+No closed-form BS delta for a spread — use component-wise BS deltas in baseline.
+
+---
+
+### src/payoffs/straddles.py — Straddle Payoffs
+
+Locked public interface (when implemented):
+```python
+straddle_payoff(s_T, k) -> np.ndarray | float
+```
+
+Status: STUB. Implement in Phase B.
+Classical delta: 2*N(d1) - 1 (combination of call and put deltas).
+
+---
+
+### src/hedging/pnl.py — Canonical P&L Engine
+
+This is the HIGHEST-RISK shared file in the repo.
+Both classical and neural paths produce P&L through this function.
+Any change to this interface requires lead coordination.
+
+Locked public interface:
+```python
 hedge_pnl(
-    paths: np.ndarray,           # shape (n_paths, n_steps+1)
-    delta_fn: callable,          # callable(s, tau, k, r, sigma) -> delta, same shape as s
-    time_grid: np.ndarray,       # shape (n_steps+1,)
+    paths: np.ndarray,
+    delta_fn: Callable[[np.ndarray | float, np.ndarray | float], np.ndarray],
+    time_grid: np.ndarray,
     k: float,
     r: float,
     sigma: float,
-    cost_rate: float,            # proportional transaction cost in [0, 1]; 0.0005 = 5 bps
-    initial_option_price: float, # premium received for selling the call
-) -> np.ndarray                  # shape (n_paths,), terminal P&L per path
-
-classical_delta_pnl(
-    paths: np.ndarray,
-    time_grid: np.ndarray,
-    k: float, r: float, sigma: float,
     cost_rate: float,
     initial_option_price: float,
-) -> np.ndarray                  # thin wrapper calling hedge_pnl with bs.call_delta
+) -> np.ndarray  # shape (n_paths,)
 ```
 
-P&L accounting logic (what it does):
-- At t=0: receive option premium, set initial delta position
-- At each rebalancing step: observe new delta signal, compute trade = new_delta - old_delta,
-  pay |trade| * S_t * cost_rate in transaction costs
-- At T: pay out the call payoff max(S_T - K, 0), collect the hedge portfolio value
+Accounting model:
+- t=0: receive option premium; buy delta_0 shares; pay proportional cost.
+- t=i: rebalance to delta_new; pay |trade| * S_i * cost_rate; cash earns exp(r*dt).
+- t=T: liquidate position; settle option payoff.
 
-Transaction cost logic lives ONLY here.
-Neural hedger training also routes P&L through these functions.
+Status: COMPLETE.
+Does NOT own: option pricing formulas, risk measures, neural network definition.
 
 ---
 
-### src/risk_measures.py — Risk Aggregation (Pure Functions)
+### src/hedging/transaction_costs.py — Cost Models
 
-Concern: mapping a distribution of P&L outcomes to a scalar risk measure.
-
-Planned public interface:
+Locked public interface:
+```python
+proportional_cost(trade, s, cost_rate) -> np.ndarray | float
 ```
+
+Status: COMPLETE.
+All cost arithmetic routes through here.
+v1: proportional only. Future: add fixed costs, etc. here.
+
+---
+
+### src/hedging/baseline.py — Classical BS Baseline
+
+Locked public interface:
+```python
+classical_delta_pnl(paths, time_grid, k, r, sigma, cost_rate, initial_option_price) -> np.ndarray
+```
+
+Status: COMPLETE.
+Thin wrapper calling hedge_pnl with bs.call_delta as delta_fn.
+Rule: if no classical baseline exists for a payoff/model, raise NotImplementedError
+with a clear explanation. Never silently apply an incorrect baseline.
+
+---
+
+### src/hedging/hedge_universe.py — Hedge Universe (Stub)
+
+Concern: defines which instruments are tradable (Phase D).
+
+Planned protocol:
+```python
+class HedgeUniverse(Protocol):
+    n_instruments: int
+    instrument_prices(paths, time_grid) -> np.ndarray  # (n_paths, n_steps+1, n_instruments)
+
+class StockOnlyUniverse     # 1 instrument
+class StockPlusOptionUniverse  # 2 instruments: stock + liquid option
+```
+
+Status: STUB. Implement in Phase D.
+
+---
+
+### src/risk/cvar.py — Conditional Value-at-Risk
+
+Locked public interface:
+```python
 cvar(pnl: np.ndarray, alpha: float = 0.95) -> float
-    # CVaR (Expected Shortfall): mean of the worst (1-alpha) fraction of outcomes
-    # pnl shape: (n_paths,). Returns a positive number (larger = worse).
-    # Convention: CVaR measures LOSS, so negate P&L internally.
+```
 
+Status: COMPLETE.
+Higher return = MORE risk = WORSE outcome.
+
+---
+
+### src/risk/entropic.py — Entropic Risk Measure
+
+Locked public interface:
+```python
 entropic_risk(pnl: np.ndarray, lambda_: float = 1.0) -> float
-    # Entropic risk measure: (1/lambda) * log(E[exp(-lambda * pnl)])
-    # Convex, monotone, consistent risk measure.
 ```
 
-All functions are pure: numpy in, float out. No model dependencies, no side effects.
-These functions are used as:
-  (a) training loss in src/train.py
-  (b) evaluation metric in experiment scripts
-
-The sign convention is: higher return value = MORE risk = WORSE outcome.
-Internally, losses are positive (negate P&L before computing CVaR/entropic).
+Status: COMPLETE.
 
 ---
 
-### src/neural_hedger.py — PyTorch Model Definition Only
+### src/neural/architectures.py — Neural Network Definitions
 
-Concern: defining the neural network architecture.
-
-Planned public interface:
-```
+Locked public interface:
+```python
 class HedgeNet(nn.Module):
-    def __init__(self, n_layers: int = 4, hidden_dim: int = 64) -> None: ...
-    def forward(self, x: Tensor) -> Tensor: ...
-        # x shape: (batch, 3) — features: (S_t/S_0, tau_t, current_delta)
-        # output shape: (batch,) — hedge ratio in [0, 1] via sigmoid
+    def __init__(self, n_layers: int = 4, hidden_dim: int = 64) -> None
+    def forward(self, x: Tensor) -> Tensor  # x: (batch, n_features), out: (batch,)
 ```
 
-Does NOT own: training loop, loss computation, P&L accounting, data generation.
-Does NOT call numpy. PyTorch only in this file.
-
-Design decisions:
-- Sigmoid output bounds the hedge ratio to [0, 1]. A call delta is always in [0, 1], so this
-  is correct and avoids exploding positions.
-- Input normalization: S_t/S_0 (not raw price), tau_t in [0, T] (natural scale).
-  current_delta is already in [0, 1].
-- Architecture: FFN with ReLU activations and layer normalization for training stability.
-  Default: 4 layers, 64 hidden units. Adjust in TrainingConfig.
+Status: COMPLETE.
+Input features: (S_t/S_0, tau_t, prev_delta) — dimension 3.
+Output: sigmoid-bounded hedge ratio in (0, 1).
+Does NOT own: training loop, features, P&L accounting.
 
 ---
 
-### src/train.py — Training Loop
+### src/neural/features.py — Feature Builders
 
-Concern: training the neural hedger.
+Locked public interface:
+```python
+class FeatureBuilder(Protocol): ...  # callable protocol
 
-Planned public interface:
+base_features(s_t, s0, tau_t, prev_delta) -> np.ndarray  # (n_paths, 3)
+heston_features(s_t, s0, tau_t, prev_delta, v_t) -> np.ndarray  # (n_paths, 4)  STUB
 ```
+
+Status: base_features COMPLETE; heston_features STUB.
+
+---
+
+### src/neural/train.py — Training Loop
+
+Locked public interface:
+```python
 train(
     config: TrainingConfig,
     market_config: MarketConfig,
     model: HedgeNet,
     optimizer: torch.optim.Optimizer,
 ) -> tuple[HedgeNet, list[float]]
-    # returns trained model and list of per-epoch loss values
 ```
 
-Internals:
-- Calls `GBM.sample_paths()` with `config.seed` to generate training paths
-- Converts paths to tensors, computes features at each timestep
-- Calls `model.forward()` at each step to get hedge ratios
-- Routes through `hedge_pnl()` for P&L accounting (torch-differentiable version)
-- Calls `cvar()` as the loss
-- Backpropagates and steps the optimizer
-- Saves checkpoint at end of training
+Internal `_compute_pnl` is a differentiable PyTorch mirror of `src/hedging/pnl.hedge_pnl`.
+The two must stay in sync: if pnl.py accounting changes, _compute_pnl must change too.
 
-Note: `hedge_pnl` in train.py needs a differentiable PyTorch version. This is implemented
-locally inside train.py using torch tensors, NOT by calling the numpy version in hedger.py.
-The numpy `hedge_pnl` in hedger.py is for evaluation only.
+Status: COMPLETE.
 
 ---
 
-### src/config.py — Experiment Hyperparameters
-
-Concern: all tunable parameters in one place.
+### src/neural/evaluate.py — Evaluation
 
 Planned public interface:
-```
-@dataclass(frozen=True)
-class MarketConfig:
-    s0: float = 100.0
-    mu: float = 0.05         # physical drift (not used in risk-neutral training)
-    r: float = 0.02          # risk-free rate
-    sigma: float = 0.20
-    T: float = 0.5           # maturity in years
-    n_steps: int = 50        # rebalancing steps
+```python
+@dataclass
+class EvaluationResult: ...  # all standard metrics
 
-@dataclass(frozen=True)
-class TrainingConfig:
-    n_paths: int = 50_000    # paths per training epoch
-    n_epochs: int = 200
-    lr: float = 1e-3
-    hidden_dim: int = 64
-    n_layers: int = 4
-    seed: int = 42
-    cost_rate: float = 0.0   # 0.0 = no costs; 0.0005 = 5 bps
-    alpha: float = 0.95      # CVaR level
-    k: float = 100.0         # strike price
+evaluate(model, market_config, training_config, eval_seed) -> EvaluationResult
 ```
 
-This is a high-risk shared file: changes here affect every experiment.
-Do not remove fields. Do not rename fields without updating all callers.
-Add new fields with defaults to avoid breaking existing code.
+Status: STUB. Implement in Phase A.
+Separation from training loop is mandatory: training loss != evaluation metrics.
 
 ---
 
-### experiments/ — Self-Contained Experiment Scripts
+### src/experiments/configs.py — Experiment Hyperparameters
 
-Each script:
-- Has `if __name__ == "__main__":` guard
-- Instantiates configs from `src/config.py`
-- Does its work
-- Saves plots to `plots/`
-- Prints a brief numerical summary to stdout
-- Takes no command-line arguments
+HIGH-RISK SHARED FILE. Rules: no field removal, no field rename without updating all callers.
 
-Planned experiments:
+Frozen dataclasses:
+```python
+MarketConfig          # GBM parameters
+HestonConfig          # Heston parameters (stub)
+PayoffConfig          # payoff_type, strike(s)
+HedgeUniverseConfig   # universe_type, hedge option params
+TrainingConfig        # n_paths, n_epochs, lr, seed, cost_rate, alpha
+EvaluationConfig      # eval_n_paths, seed_offset, alpha, lambda_
+ExperimentConfig      # umbrella: name + all sub-configs
+```
 
-| Script | What it does | Key output |
-|---|---|---|
-| 01_validate_market.py | GBM empirical moments vs. theoretical | plots/01_gbm_moments.png |
-| 02_classical_delta.py | Delta hedger P&L, no cost + 5 bps cost | plots/02_pnl_distribution.png |
-| 03_neural_no_costs.py | Train neural hedger, show it learns BS delta | plots/03_learned_vs_bs_delta.png |
-| 04_neural_with_costs.py | Retrain with 5 bps cost, show deviation from BS | plots/04_hedge_ratio_with_costs.png |
-| 05_cost_frontier.py | Sweep costs 0→50 bps, CVaR vs. expected cost | plots/05_cost_frontier.png |
+Status: COMPLETE.
+
+---
+
+### src/experiments/registry.py — Named Experiment Registry
+
+Public interface:
+```python
+REGISTRY: dict[str, ExperimentConfig]
+get_config(name: str) -> ExperimentConfig
+list_experiments() -> list[str]
+```
+
+Status: PARTIAL. Phase A baseline configs registered.
+
+---
+
+### src/experiments/runner.py — Experiment Runner (Stub)
+
+Public interface:
+```python
+run_experiment(name: str, force: bool = False) -> list[SummaryRow]
+```
+
+Status: STUB. Implement in Phase A.
+
+---
+
+### src/experiments/summaries.py — SummaryRow
+
+```python
+@dataclass
+class SummaryRow: ...  # canonical result row for a (config, strategy, seed) triple
+```
+
+Status: COMPLETE. All lanes write SummaryRow. Do not add new metrics without checking
+that all callers can supply them.
+
+---
+
+### src/reporting/ — Report Generation (Stubs)
+
+Three stubs:
+- `tables.py`: build_summary_table(rows) -> pd.DataFrame
+- `plots.py`: plot_cost_frontier(rows, output_path), ...
+- `report.py`: generate_report(results_dir, output_path)
+
+Status: STUB. Implement in Phase E.
+
+---
+
+### src/utils/ — Shared Utilities
+
+```python
+seeds.py: derive_seed(base_seed, purpose) -> int
+io.py: save_json, load_json, save_dataclass_json
+stats.py: standard_error(arr), report_moment(arr, name)
+```
+
+Status: COMPLETE (seeds, stats, basic io).
+
+---
+
+### experiments/ — Named Experiment Entrypoints
+
+v0.1 baseline scripts (01-05) are preserved as-is.
+New scripts use `src/experiments/registry.get_config(name)` to resolve configs.
+Each script saves to `results/raw/<name>/` via `src/utils/io`.
 
 ---
 
 ### tests/ — Numerical Correctness Tests
 
-One test file per `src/` module that has testable numerical behavior.
-Tests are fast (total suite < 60s), seeded, deterministic.
-Tests verify mathematical claims, not internal implementation structure.
+Philosophy: test mathematical claims, not code structure.
+No mocking. Real numerics. Total suite < 60 seconds.
 
 | Test file | Tests |
 |---|---|
-| test_market.py | 7 tests — shape, determinism, positivity, moments, input validation |
-| test_black_scholes.py | 7 tests — put-call parity, FD Greeks, expiry, limits, MC agreement |
-| test_hedger.py | to be written — P&L zero-mean in no-cost limit, cost deduction accuracy |
-| test_risk_measures.py | to be written — CVaR on known dist, entropic risk convexity |
+| test_market.py | 7 GBM tests |
+| test_black_scholes.py | 7 BS tests |
+| test_hedger.py | 5 P&L accounting tests |
+| test_risk_measures.py | 15 risk measure tests |
+
+New tests needed (as implementation progresses):
+- test_payoffs.py: spread payoffs, straddle payoffs
+- test_heston.py: Heston path properties
+- test_neural_smoke.py: forward pass shape, training loss decreases
+- test_runner_smoke.py: runner returns SummaryRows
 
 ---
 
-### writeup/ — Documentation
-
-| File | Owner | Content |
-|---|---|---|
-| math_reference.md | User | BS PDE derivation, Ito's lemma, Greeks, risk measures |
-| paper_notes.md | User | Buehler 2019 annotation in own words |
-| architecture.md | Claude | THIS FILE — locked module boundaries |
-| sprint_plan.md | Claude | Build order, gates, status |
-
----
-
-## Data Flow Diagram
+## Data Flow: Seed Management
 
 ```
-                    src/config.py
-                   (seeds, params)
-                        |
-           +------------+------------+
-           |                         |
-    src/market.py              src/black_scholes.py
-    GBM.sample_paths()         call_delta(), call_price()
-           |                         |
-           +------------+------------+
-                        |
-                 src/hedger.py
-                 hedge_pnl()
-                        |
-               +---------+---------+
-               |                   |
-      Classical path          Neural path
-      (call_delta as         (HedgeNet.forward()
-       delta_fn)              via src/train.py)
-               |                   |
-               +----+----+---------+
-                    |
-           src/risk_measures.py
-           cvar(), entropic_risk()
-                    |
-              experiments/
-              plots + prints
+ExperimentConfig.training.seed  (master seed)
+        ↓
+derive_seed(seed, "train")  → GBM training paths
+derive_seed(seed, "eval")   → GBM evaluation paths
+derive_seed(seed, "val")    → intermediate validation (optional)
+
+torch.manual_seed(seed)  called once at top of train()
 ```
 
----
-
-## How Seeds Are Passed
-
-- GBM paths: `gbm.sample_paths(..., seed=config.seed)`. Always explicit.
-- Training paths use `config.seed`. Validation/test paths use `config.seed + 1000`.
-  (This ensures train/val paths are independent.)
-- PyTorch: `torch.manual_seed(config.seed)` called once at the top of `train()`.
-- Never call `np.random.seed()` or set any global RNG state.
-- Never share a seed between two experiments that are meant to be independent.
-
----
-
-## How Outputs Are Saved
-
-- Plots: `plt.savefig(f"plots/{filename}.png", dpi=150, bbox_inches="tight")`
-- Model checkpoints: `torch.save(model.state_dict(), f"plots/{name}_checkpoint.pt")`
-  (checkpoint stored alongside plots for now; move to `checkpoints/` if needed)
-- Numerical results: printed to stdout by experiment scripts. Redirect to log if needed.
-- No results database. No CSV dumps. No pandas DataFrames written to disk. Keep it simple.
-
----
-
-## Agent-Team Ownership Boundaries
-
-### Lane A — Quant Core
-Owns: `src/market.py`, `src/black_scholes.py`, `src/hedger.py`, `tests/test_hedger.py`
-Reads (do not write): `src/config.py`
-Safe changes: fixing numerical edge cases, adding Greeks, improving P&L accounting efficiency
-Needs coordination: changing any public function signatures in market.py or black_scholes.py
-  (callers are in experiments/, train.py, and tests/)
-
-### Lane B — Neural Modeling
-Owns: `src/neural_hedger.py`, `src/train.py`
-Reads (do not write): `src/hedger.py`, `src/risk_measures.py`, `src/config.py`
-Safe changes: model architecture, training loop, optimizer choice, learning rate schedule
-Needs coordination: any change to hedge_pnl interface (Lane A owns it);
-  any change to cvar/entropic_risk interface (Lane C owns it);
-  any new config fields (Lane C owns config.py)
-
-### Lane C — Risk and Config
-Owns: `src/risk_measures.py`, `src/config.py`, `tests/test_risk_measures.py`
-Reads (do not write): nothing in src/ (it is a low-level dependency)
-Safe changes: adding new risk measures, adjusting default hyperparams, adding new config fields
-Needs coordination: removing or renaming existing config fields (breaks Lanes A, B, D);
-  changing risk measure signatures (breaks Lane B training loop)
-
-### Lane D — Experiments and Plots
-Owns: `experiments/`, `plots/`
-Reads (do not write): all of `src/`
-Safe changes: writing new experiment scripts, adjusting plot aesthetics, adding analysis
-Needs coordination: any new config fields needed (request from Lane C);
-  any new src/ functions needed (request from Lane A or B)
-
-### Lane E — Docs and Writeup
-Owns: `writeup/`, `README.md`, `CLAUDE.md`
-Reads: nothing that affects behavior
-Safe changes: all documentation, README sections, status tables, math explanations
-Needs coordination: nothing — docs are fully isolated from code behavior
+Never: np.random.seed(), torch.manual_seed() globally.
+Always: pass seeds explicitly through configs.
 
 ---
 
@@ -365,10 +434,26 @@ Needs coordination: nothing — docs are fully isolated from code behavior
 
 | File | Risk | Why |
 |---|---|---|
-| src/config.py | HIGH | Every experiment and train.py imports it; field renames break everything |
-| src/hedger.py | HIGH | Called from both classical and neural paths; signature change breaks both |
-| src/risk_measures.py | MEDIUM | Called from train.py and experiment scripts |
-| pyproject.toml | MEDIUM | Tool config affects all lint/typecheck/test runs |
-| Makefile | LOW | Only affects `make` targets |
+| src/experiments/configs.py | VERY HIGH | Every experiment and train() imports it |
+| src/hedging/pnl.py | VERY HIGH | Both classical and neural paths depend on it |
+| src/neural/train.py | HIGH | _compute_pnl must mirror pnl.py exactly |
+| src/experiments/registry.py | HIGH | Named configs drive all experiments |
+| src/payoffs/european.py | HIGH | BS signatures used everywhere |
+| src/risk/cvar.py | MEDIUM | Training loss + evaluation metric |
+| pyproject.toml | MEDIUM | Affects all lint/typecheck/test runs |
 
-When editing high-risk files, check all callers before changing any signature.
+---
+
+## How to Map v0.1 to v1
+
+| v0.1 flat module | v1 canonical location |
+|---|---|
+| src/market.py | src/models/gbm.py |
+| src/black_scholes.py | src/payoffs/european.py |
+| src/hedger.py (hedge_pnl) | src/hedging/pnl.py |
+| src/hedger.py (classical_delta_pnl) | src/hedging/baseline.py |
+| src/risk_measures.py (cvar) | src/risk/cvar.py |
+| src/risk_measures.py (entropic_risk) | src/risk/entropic.py |
+| src/neural_hedger.py | src/neural/architectures.py |
+| src/train.py | src/neural/train.py |
+| src/config.py | src/experiments/configs.py |

@@ -14,6 +14,23 @@ venv/
 plots/*.png
 !plots/.gitkeep
 plots/*.pdf
+results/raw/*
+!results/raw/.gitkeep
+results/processed/*
+!results/processed/.gitkeep
+results/reports/*.png
+results/reports/*.pdf
+!results/reports/.gitkeep
+*.pt
+*.pth
 .DS_Store
 build/
 dist/
+
+# Web run artifacts (created by FastAPI backend, not committed)
+results/runs/*
+!results/runs/.gitkeep
+
+# Next.js build artifacts
+apps/web/.next/
+apps/web/node_modules/
