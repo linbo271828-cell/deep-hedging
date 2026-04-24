@@ -23,12 +23,12 @@ import torch
 
 from src.experiments.registry import get_config
 from src.experiments.summaries import SummaryRow
-from src.hedging.baseline import classical_delta_pnl_generalized
+from src.hedging.baseline import classical_delta_pnl_generalized, classical_delta_pnl_stock_option
 from src.hedging.transaction_costs import proportional_cost
 from src.models.gbm import GBM, time_grid as make_time_grid
-from src.neural.architectures import HedgeNet
-from src.neural.evaluate import evaluate
-from src.neural.train import train
+from src.neural.architectures import HedgeNet, HedgeNetMulti
+from src.neural.evaluate import evaluate, evaluate_raw_multi
+from src.neural.train import train, train_multi
 from src.payoffs.dispatch import get_payoff_spec
 from src.risk.cvar import cvar
 from src.risk.entropic import entropic_risk
@@ -53,13 +53,14 @@ def _already_done(out_dir: str) -> bool:
 def _eval_classical(config: "ExperimentConfig") -> SummaryRow:
     """Evaluate the classical benchmark hedge on held-out evaluation paths.
 
-    The benchmark is payoff-specific: call → BS call delta, put → BS put delta,
-    spread → net BS delta, straddle → net BS delta.  All benchmarks are sourced
-    from src/payoffs/dispatch.py so there is one authoritative definition.
+    Dispatches on hedge_universe.universe_type:
+      stock_only       : payoff-specific BS delta (call → N(d1), put → N(d1)−1, etc.)
+      stock_plus_option: same BS stock delta + zero hedge-option position.
     """
     mc = config.market
     tc = config.training
     ec = config.evaluation
+    universe_type = config.hedge_universe.universe_type
 
     spec = get_payoff_spec(config.payoff, mc)
 
@@ -73,36 +74,63 @@ def _eval_classical(config: "ExperimentConfig") -> SummaryRow:
     )
     tg = make_time_grid(mc.n_steps, mc.T)
 
-    pnl = classical_delta_pnl_generalized(
-        paths=paths,
-        time_grid=tg,
-        payoff_spec=spec,
-        cost_rate=tc.cost_rate,
-    )
-
-    n_paths_count = paths.shape[0]
-    n_steps = paths.shape[1] - 1
-    T = tg[-1]
-
-    total_cost = np.zeros(n_paths_count)
-    total_turnover = np.zeros(n_paths_count)
-
-    delta = spec.classical_delta_fn(paths[:, 0], T)
-    cost0 = proportional_cost(delta, paths[:, 0], tc.cost_rate)
-    total_cost += cost0
-    total_turnover += np.abs(delta)
-
-    for i in range(1, n_steps):
-        tau_i = T - tg[i]
-        delta_new = spec.classical_delta_fn(paths[:, i], tau_i)
-        trade = delta_new - delta
-        total_cost += proportional_cost(trade, paths[:, i], tc.cost_rate)
-        total_turnover += np.abs(trade)
-        delta = delta_new
-
-    liquidation_cost = proportional_cost(delta, paths[:, n_steps], tc.cost_rate)
-    total_cost += liquidation_cost
-    total_turnover += np.abs(delta)
+    if universe_type == "stock_plus_option":
+        from src.hedging.hedge_universe import StockPlusOptionUniverse
+        universe = StockPlusOptionUniverse(mc, config.hedge_universe)
+        hedge_prices = universe.hedge_option_prices_along_paths(paths, tg)
+        pnl = classical_delta_pnl_stock_option(
+            paths=paths,
+            hedge_option_prices=hedge_prices,
+            time_grid=tg,
+            payoff_spec=spec,
+            cost_rate=tc.cost_rate,
+            k_h=config.hedge_universe.hedge_option_strike,
+        )
+        n_paths_count = paths.shape[0]
+        n_steps = paths.shape[1] - 1
+        T = tg[-1]
+        total_cost = np.zeros(n_paths_count)
+        total_turnover = np.zeros(n_paths_count)
+        delta = spec.classical_delta_fn(paths[:, 0], T)
+        cost0 = proportional_cost(delta, paths[:, 0], tc.cost_rate)
+        total_cost += cost0
+        total_turnover += np.abs(delta)
+        for i in range(1, n_steps):
+            tau_i = T - tg[i]
+            delta_new = spec.classical_delta_fn(paths[:, i], tau_i)
+            trade = delta_new - delta
+            total_cost += proportional_cost(trade, paths[:, i], tc.cost_rate)
+            total_turnover += np.abs(trade)
+            delta = delta_new
+        liq = proportional_cost(delta, paths[:, n_steps], tc.cost_rate)
+        total_cost += liq
+        total_turnover += np.abs(delta)
+    else:
+        pnl = classical_delta_pnl_generalized(
+            paths=paths,
+            time_grid=tg,
+            payoff_spec=spec,
+            cost_rate=tc.cost_rate,
+        )
+        n_paths_count = paths.shape[0]
+        n_steps = paths.shape[1] - 1
+        T = tg[-1]
+        total_cost = np.zeros(n_paths_count)
+        total_turnover = np.zeros(n_paths_count)
+        delta = spec.classical_delta_fn(paths[:, 0], T)
+        cost0 = proportional_cost(delta, paths[:, 0], tc.cost_rate)
+        total_cost += cost0
+        total_turnover += np.abs(delta)
+        for i in range(1, n_steps):
+            tau_i = T - tg[i]
+            delta_new = spec.classical_delta_fn(paths[:, i], tau_i)
+            trade = delta_new - delta
+            total_cost += proportional_cost(trade, paths[:, i], tc.cost_rate)
+            total_turnover += np.abs(trade)
+            delta = delta_new
+        liquidation_cost = proportional_cost(delta, paths[:, n_steps], tc.cost_rate)
+        total_cost += liquidation_cost
+        total_turnover += np.abs(delta)
 
     return SummaryRow(
         experiment_name=config.name,
@@ -126,7 +154,12 @@ def _eval_classical(config: "ExperimentConfig") -> SummaryRow:
 
 
 def _run_core(config: ExperimentConfig, out_dir: str) -> list[SummaryRow]:
-    """Execute training + evaluation and write all artifacts to out_dir."""
+    """Execute training + evaluation and write all artifacts to out_dir.
+
+    Dispatches on config.hedge_universe.universe_type:
+      stock_only       : HedgeNet (3-feature, 1-output)
+      stock_plus_option: HedgeNetMulti (5-feature, 2-output)
+    """
     os.makedirs(out_dir, exist_ok=True)
 
     config_dict = dataclasses.asdict(config)
@@ -135,21 +168,35 @@ def _run_core(config: ExperimentConfig, out_dir: str) -> list[SummaryRow]:
     tc = config.training
     mc = config.market
     ec = config.evaluation
+    universe_type = config.hedge_universe.universe_type
 
-    model = HedgeNet(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
-    optimizer = torch.optim.Adam(model.parameters(), lr=tc.lr)
-    model, loss_history = train(
-        config=tc, market_config=mc, model=model, optimizer=optimizer,
-        payoff_config=config.payoff,
-    )
-
-    torch.save(model.state_dict(), os.path.join(out_dir, "model_checkpoint.pt"))
-    save_json({"loss_history": loss_history}, os.path.join(out_dir, "loss_history.json"))
-
-    eval_result = evaluate(
-        model=model, market_config=mc, training_config=tc, eval_config=ec,
-        payoff_config=config.payoff,
-    )
+    if universe_type == "stock_plus_option":
+        model_multi = HedgeNetMulti(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
+        optimizer = torch.optim.Adam(model_multi.parameters(), lr=tc.lr)
+        model_multi, loss_history = train_multi(
+            config=tc, market_config=mc, hedge_universe_config=config.hedge_universe,
+            model=model_multi, optimizer=optimizer, payoff_config=config.payoff,
+        )
+        torch.save(model_multi.state_dict(), os.path.join(out_dir, "model_checkpoint.pt"))
+        save_json({"loss_history": loss_history}, os.path.join(out_dir, "loss_history.json"))
+        eval_result, _ = evaluate_raw_multi(
+            model=model_multi, market_config=mc, training_config=tc, eval_config=ec,
+            hedge_universe_config=config.hedge_universe, payoff_config=config.payoff,
+        )
+        model = model_multi  # alias for checkpoint reuse
+    else:
+        model = HedgeNet(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
+        optimizer = torch.optim.Adam(model.parameters(), lr=tc.lr)
+        model, loss_history = train(
+            config=tc, market_config=mc, model=model, optimizer=optimizer,
+            payoff_config=config.payoff,
+        )
+        torch.save(model.state_dict(), os.path.join(out_dir, "model_checkpoint.pt"))
+        save_json({"loss_history": loss_history}, os.path.join(out_dir, "loss_history.json"))
+        eval_result = evaluate(
+            model=model, market_config=mc, training_config=tc, eval_config=ec,
+            payoff_config=config.payoff,
+        )
 
     neural_row = SummaryRow(
         experiment_name=config.name,

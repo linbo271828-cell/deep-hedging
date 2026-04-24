@@ -115,6 +115,31 @@ def _payoff_meta(payoff_type_key: str) -> dict[str, str]:
     return _PAYOFF_METADATA.get(payoff_type_key, {})
 
 
+_UNIVERSE_METADATA: dict[str, dict[str, str]] = {
+    "stock_only": {
+        "hedge_universe_display": "Stock Only",
+        "hedge_universe_description": "Single instrument: underlying stock.",
+        "benchmark_note": "Analytic payoff-specific BS delta.",
+    },
+    "stock_plus_option": {
+        "hedge_universe_display": "Stock + ATM Call Hedge",
+        "hedge_universe_description": (
+            "Two instruments: underlying stock and a co-terminous ATM European call. "
+            "The neural hedger jointly optimises both positions. "
+            "Classical baseline: stock-only BS delta + zero hedge-option position."
+        ),
+        "benchmark_note": (
+            "Classical baseline uses stock-only BS delta; "
+            "hedge-option leg is held at zero. Comparison is asymmetric by design."
+        ),
+    },
+}
+
+
+def _universe_meta(universe_type_key: str) -> dict[str, str]:
+    return _UNIVERSE_METADATA.get(universe_type_key, {})
+
+
 # ---------------------------------------------------------------------------
 # Preset definitions
 # ---------------------------------------------------------------------------
@@ -261,6 +286,73 @@ PRESETS: dict[str, dict[str, Any]] = {
             evaluation=_FAST_EVAL,
         ),
     },
+    "gbm_call_stock_option_5bps": {
+        "id": "gbm_call_stock_option_5bps",
+        "name": "GBM Call — Stock + Option, 5 bps",
+        "description": (
+            "Hedging a short European call with both the underlying stock AND a liquid "
+            "ATM call hedge option. The neural hedger learns to jointly allocate between "
+            "two instruments under 5 bp costs. "
+            "Classical baseline: stock-only BS delta (zero hedge-option position). "
+            "Asymmetric comparison by design — tests whether the extra instrument helps."
+        ),
+        **_payoff_meta("call"),
+        **_universe_meta("stock_plus_option"),
+        "cost_rate": 0.0005,
+        "market_model": "GBM",
+        "payoff_type": "European Call",
+        "hedge_universe": "Stock + ATM Call Hedge",
+        "n_epochs": 40,
+        "est_seconds": 55,
+        "config": ExperimentConfig(
+            name="gbm_call_stock_option_5bps",
+            market=MarketConfig(),
+            payoff=PayoffConfig(payoff_type="call"),
+            hedge_universe=HedgeUniverseConfig(
+                universe_type="stock_plus_option",
+                hedge_option_strike=100.0,
+                hedge_option_maturity=0.5,
+            ),
+            training=TrainingConfig(
+                n_paths=8_000, n_epochs=40, hidden_dim=32, n_layers=3,
+                seed=47, cost_rate=0.0005,
+            ),
+            evaluation=_FAST_EVAL,
+        ),
+    },
+    "gbm_straddle_stock_option_5bps": {
+        "id": "gbm_straddle_stock_option_5bps",
+        "name": "GBM Straddle — Stock + Option, 5 bps",
+        "description": (
+            "Hedging a short straddle (|S_T − K|) with stock + ATM call hedge under 5 bp costs. "
+            "The straddle has near-zero delta ATM and requires the hedger to adapt quickly "
+            "to directional moves. The hedge option can offset vega-like exposure that pure "
+            "stock hedging cannot capture. Most challenging preset in the lab."
+        ),
+        **_payoff_meta("straddle"),
+        **_universe_meta("stock_plus_option"),
+        "cost_rate": 0.0005,
+        "market_model": "GBM",
+        "payoff_type": "Straddle",
+        "hedge_universe": "Stock + ATM Call Hedge",
+        "n_epochs": 40,
+        "est_seconds": 55,
+        "config": ExperimentConfig(
+            name="gbm_straddle_stock_option_5bps",
+            market=MarketConfig(),
+            payoff=PayoffConfig(payoff_type="straddle"),
+            hedge_universe=HedgeUniverseConfig(
+                universe_type="stock_plus_option",
+                hedge_option_strike=100.0,
+                hedge_option_maturity=0.5,
+            ),
+            training=TrainingConfig(
+                n_paths=8_000, n_epochs=40, hidden_dim=32, n_layers=3,
+                seed=48, cost_rate=0.0005,
+            ),
+            evaluation=_FAST_EVAL,
+        ),
+    },
 }
 
 _PRESET_LIST = [
@@ -294,31 +386,53 @@ RUNS_LOCK = threading.Lock()
 def _generate_pnl_plot(out_dir: str, config: ExperimentConfig) -> str:
     """Generate a P&L distribution histogram comparing neural vs classical.
 
-    Loads the trained model checkpoint, re-runs inference on eval paths,
-    re-runs the classical baseline on the same paths, and saves a PNG.
+    Dispatches on hedge_universe.universe_type; handles both stock_only and
+    stock_plus_option experiments.
     """
+    plt.style.use("dark_background")
     mc = config.market
     tc = config.training
     ec = config.evaluation
+    universe_type = config.hedge_universe.universe_type
 
     spec = get_payoff_spec(config.payoff, mc)
-
-    # Load trained model
-    model = HedgeNet(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
     checkpoint_path = os.path.join(out_dir, "model_checkpoint.pt")
-    model.load_state_dict(torch.load(checkpoint_path, map_location="cpu", weights_only=True))
 
-    # Neural P&L
-    _, neural_pnl = evaluate_raw(model, mc, tc, ec, payoff_config=config.payoff)
-
-    # Classical P&L (same eval paths via same seed)
     eval_seed = derive_seed(tc.seed + ec.seed_offset, "eval")
     gbm = GBM(s0=mc.s0, mu=mc.r, sigma=mc.sigma)
     paths = gbm.sample_paths(n_paths=ec.n_paths, n_steps=mc.n_steps, T=mc.T, seed=eval_seed)
     tg = make_time_grid(mc.n_steps, mc.T)
-    classical_pnl = classical_delta_pnl_generalized(
-        paths=paths, time_grid=tg, payoff_spec=spec, cost_rate=tc.cost_rate,
-    )
+
+    if universe_type == "stock_plus_option":
+        from src.hedging.baseline import classical_delta_pnl_stock_option
+        from src.hedging.hedge_universe import StockPlusOptionUniverse
+        from src.neural.architectures import HedgeNetMulti
+        from src.neural.evaluate import evaluate_raw_multi
+
+        model_multi = HedgeNetMulti(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
+        model_multi.load_state_dict(
+            torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        )
+        _, neural_pnl = evaluate_raw_multi(
+            model=model_multi, market_config=mc, training_config=tc, eval_config=ec,
+            hedge_universe_config=config.hedge_universe, payoff_config=config.payoff,
+        )
+        universe = StockPlusOptionUniverse(mc, config.hedge_universe)
+        hedge_prices = universe.hedge_option_prices_along_paths(paths, tg)
+        classical_pnl = classical_delta_pnl_stock_option(
+            paths=paths, hedge_option_prices=hedge_prices, time_grid=tg,
+            payoff_spec=spec, cost_rate=tc.cost_rate,
+            k_h=config.hedge_universe.hedge_option_strike,
+        )
+    else:
+        model = HedgeNet(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
+        model.load_state_dict(
+            torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        )
+        _, neural_pnl = evaluate_raw(model, mc, tc, ec, payoff_config=config.payoff)
+        classical_pnl = classical_delta_pnl_generalized(
+            paths=paths, time_grid=tg, payoff_spec=spec, cost_rate=tc.cost_rate,
+        )
 
     # Histogram
     all_pnl = np.concatenate([neural_pnl, classical_pnl])
@@ -327,31 +441,38 @@ def _generate_pnl_plot(out_dir: str, config: ExperimentConfig) -> str:
     bins = np.linspace(lo, hi, 80)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig.patch.set_facecolor("#0f172a")
 
     for ax, pnl, label, color in [
-        (axes[0], neural_pnl, "Neural Hedger", "#3B82F6"),
-        (axes[1], classical_pnl, "Classical (BS Δ)", "#10B981"),
+        (axes[0], neural_pnl, "Neural Hedger", "#3b82f6"),
+        (axes[1], classical_pnl, "Classical Benchmark", "#22c55e"),
     ]:
-        ax.hist(pnl, bins=bins, color=color, alpha=0.72, density=True,
-                edgecolor="white", linewidth=0.3)
+        ax.set_facecolor("#0b111c")
+        for spine in ax.spines.values():
+            spine.set_color("#334155")
+        ax.tick_params(colors="#94a3b8")
+        ax.hist(pnl, bins=bins, color=color, alpha=0.75, density=True,
+                edgecolor="#1e293b", linewidth=0.4)
         mean_v = float(np.mean(pnl))
         p5_v = float(np.percentile(pnl, 5))
-        ax.axvline(mean_v, color="black", linestyle="--", linewidth=1.5,
+        ax.axvline(mean_v, color="#f1f5f9", linestyle="--", linewidth=1.4,
                    label=f"Mean: {mean_v:.3f}")
-        ax.axvline(p5_v, color="crimson", linestyle=":", linewidth=1.5,
+        ax.axvline(p5_v, color="#f87171", linestyle=":", linewidth=1.4,
                    label=f"5th pct: {p5_v:.3f}")
-        ax.set_xlabel("Terminal P&L", fontsize=12)
-        ax.set_ylabel("Density", fontsize=12)
-        ax.set_title(label, fontsize=13, fontweight="bold")
-        ax.legend(fontsize=10)
-        ax.grid(alpha=0.25)
+        ax.set_xlabel("Terminal P&L", fontsize=11, color="#94a3b8")
+        ax.set_ylabel("Density", fontsize=11, color="#94a3b8")
+        ax.set_title(label, fontsize=13, fontweight="bold", color="#e2e8f0")
+        ax.legend(fontsize=10, facecolor="#1e293b", edgecolor="#334155",
+                  labelcolor="#94a3b8")
+        ax.grid(alpha=0.12, color="#334155", linestyle="-")
 
     cost_label = f"{tc.cost_rate * 10_000:.0f} bps" if tc.cost_rate > 0 else "zero cost"
     display_name = _PAYOFF_METADATA.get(config.payoff.payoff_type, {}).get(
         "payoff_display_name", "GBM"
     )
     fig.suptitle(
-        f"P&L Distribution — {display_name} ({cost_label})", fontsize=14, fontweight="bold"
+        f"P&L Distribution — {display_name} ({cost_label})",
+        fontsize=14, fontweight="bold", color="#e2e8f0"
     )
     plt.tight_layout()
 
@@ -474,18 +595,19 @@ def get_run_results(run_id: str) -> dict[str, Any]:
         classical = json.load(f)
 
     preset = PRESETS.get(state.preset_id, {})
-    payoff_fields = {
+    meta_fields = {
         k: preset.get(k, "")
         for k in (
             "payoff_display_name", "payoff_formula", "payoff_profile",
             "delta_range", "benchmark_label", "classical_description",
+            "hedge_universe_display", "hedge_universe_description", "benchmark_note",
         )
     }
     return {
         "run_id": run_id,
         "preset_id": state.preset_id,
         "preset_name": state.preset_name,
-        **payoff_fields,
+        **meta_fields,
         "neural": neural,
         "classical": classical,
     }
@@ -540,6 +662,8 @@ def _compute_surface_data(out_dir: str) -> dict[str, Any]:
     mc = MarketConfig(**cfg["market"])
     tc = TrainingConfig(**cfg["training"])
     pc = PayoffConfig(**cfg["payoff"])
+    uc = HedgeUniverseConfig(**cfg["hedge_universe"])
+    universe_type = uc.universe_type
 
     spec = get_payoff_spec(pc, mc)
 
@@ -548,23 +672,64 @@ def _compute_surface_data(out_dir: str) -> dict[str, Any]:
     tau_vals = np.linspace(mc.T / mc.n_steps, mc.T, _N_TAU)
     S, TAU = np.meshgrid(s_vals, tau_vals)  # both shape (_N_TAU, _N_S)
 
-    # Classical delta surface (payoff-aware, vectorised)
+    # Classical delta surface (payoff-aware, vectorised) — same for both universes
     Z_bs = np.asarray(spec.classical_delta_fn(S, TAU), dtype=float)
 
-    # Neural hedge surface — prev_delta fixed at 0, delta transform applied
-    model = HedgeNet(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
-    model.load_state_dict(
-        torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    )
-    model.eval()
+    n_grid = _N_S * _N_TAU
+    zeros = torch.zeros(n_grid, dtype=torch.float32)
+    s_norm = torch.tensor((S / mc.s0).flatten(), dtype=torch.float32)
+    tau_flat = torch.tensor(TAU.flatten(), dtype=torch.float32)
 
-    with torch.no_grad():
-        s_norm = torch.tensor((S / mc.s0).flatten(), dtype=torch.float32)
-        tau_flat = torch.tensor(TAU.flatten(), dtype=torch.float32)
-        prev_delta = torch.zeros(_N_S * _N_TAU, dtype=torch.float32)
-        feats = torch.stack([s_norm, tau_flat, prev_delta], dim=1)
-        raw = model(feats)
-        Z_neural = spec.delta_transform(raw).numpy().reshape(_N_TAU, _N_S)
+    if universe_type == "stock_plus_option":
+        from src.hedging.hedge_universe import StockPlusOptionUniverse
+        from src.neural.architectures import HedgeNetMulti
+
+        universe = StockPlusOptionUniverse(mc, uc)
+        v_hedge_0 = float(universe.hedge_option_price(np.array([mc.s0]), mc.T)[0])
+        if v_hedge_0 < 1e-8:
+            v_hedge_0 = 1.0
+
+        # Hedge option prices on the surface grid
+        s_grid_flat = S.flatten()
+        tau_grid_flat = TAU.flatten()
+        h_grid = np.array([
+            universe.hedge_option_price(np.array([s]), float(t))
+            for s, t in zip(s_grid_flat, tau_grid_flat)
+        ]).flatten()
+        h_norm = torch.tensor(h_grid / v_hedge_0, dtype=torch.float32)
+
+        model_multi = HedgeNetMulti(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
+        model_multi.load_state_dict(
+            torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        )
+        model_multi.eval()
+
+        with torch.no_grad():
+            feats = torch.stack([s_norm, tau_flat, zeros, zeros, h_norm], dim=1)
+            out = model_multi(feats)
+            raw_stock = out[:, 0]
+            Z_neural = spec.delta_transform(raw_stock).numpy().reshape(_N_TAU, _N_S)
+
+        surface_note = (
+            "stock delta only (stock+option universe); "
+            "prev_delta_stock=0, prev_delta_hedge=0 — flat initial position slice"
+        )
+    else:
+        model_so = HedgeNet(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
+        model_so.load_state_dict(
+            torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        )
+        model_so.eval()
+
+        with torch.no_grad():
+            feats = torch.stack([s_norm, tau_flat, zeros], dim=1)
+            raw = model_so(feats)
+            Z_neural = spec.delta_transform(raw).numpy().reshape(_N_TAU, _N_S)
+
+        surface_note = (
+            "fixed at 0 — static slice: what would the neural hedger do "
+            "starting from a flat (unhedged) position?"
+        )
 
     Z_diff = Z_neural - Z_bs
 
@@ -576,7 +741,7 @@ def _compute_surface_data(out_dir: str) -> dict[str, Any]:
         "z_diff": Z_diff.tolist(),
         "x_label": f"Stock Price  (K = {mc.k:.0f})",
         "y_label": "Time to Maturity τ (years)",
-        "z_label": "Hedge Ratio Δ",
+        "z_label": "Hedge Ratio Δ (stock leg)",
         "metadata": {
             "s0": mc.s0,
             "k": mc.k,
@@ -585,15 +750,13 @@ def _compute_surface_data(out_dir: str) -> dict[str, Any]:
             "T": mc.T,
             "cost_rate": tc.cost_rate,
             "payoff_type": pc.payoff_type,
+            "universe_type": universe_type,
             "classical_description": spec.classical_description,
             "n_s": _N_S,
             "n_tau": _N_TAU,
             "z_min_bs": float(Z_bs.min()),
             "z_max_bs": float(Z_bs.max()),
-            "prev_delta_assumption": (
-                "fixed at 0 — static slice: what would the neural hedger do "
-                "starting from a flat (unhedged) position?"
-            ),
+            "prev_delta_assumption": surface_note,
         },
     }
 

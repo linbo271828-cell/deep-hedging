@@ -102,7 +102,9 @@ export default function HomePage() {
                 <div className="card-meta">
                   <span className="badge blue">{preset.market_model}</span>
                   <span className="badge">{preset.payoff_display_name || preset.payoff_type}</span>
-                  <span className="badge">{preset.hedge_universe}</span>
+                  <span className={`badge ${preset.hedge_universe_display ? "blue" : ""}`}>
+                    {preset.hedge_universe_display || preset.hedge_universe}
+                  </span>
                   <span className={`badge ${preset.cost_rate > 0 ? "amber" : "green"}`}>
                     {preset.cost_rate > 0
                       ? `${(preset.cost_rate * 10000).toFixed(0)} bps`

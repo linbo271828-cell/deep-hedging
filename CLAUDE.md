@@ -71,7 +71,7 @@ Do NOT add features beyond v1 scope without explicit user instruction.
 | src/hedging/pnl.py | COMPLETE | Migrated from src/hedger.py |
 | src/hedging/transaction_costs.py | COMPLETE | Extracted from hedger |
 | src/hedging/baseline.py | COMPLETE | Migrated from src/hedger.py |
-| src/hedging/hedge_universe.py | STUB | Phase D |
+| src/hedging/hedge_universe.py | COMPLETE | StockOnlyUniverse, StockPlusOptionUniverse, make_universe |
 | src/risk/cvar.py | COMPLETE | Migrated from src/risk_measures.py |
 | src/risk/entropic.py | COMPLETE | Migrated from src/risk_measures.py |
 | src/neural/architectures.py | COMPLETE | Migrated from src/neural_hedger.py |
@@ -99,9 +99,10 @@ Do NOT add features beyond v1 scope without explicit user instruction.
 | tests/test_neural_smoke.py | COMPLETE | 7 neural smoke tests |
 | tests/test_runner_smoke.py | COMPLETE | 13 runner smoke tests |
 | tests/test_api_smoke.py | COMPLETE | 17 FastAPI smoke tests (incl. surface) |
-| tests/ | COMPLETE | 71 tests, all passing |
-| services/sim/main.py | COMPLETE | FastAPI backend — 7 routes incl. /surface |
-| apps/web/ | COMPLETE | Next.js frontend — landing + results + 3D surface |
+| tests/test_hedge_universe.py | COMPLETE | 17 stock+option smoke tests |
+| tests/ | COMPLETE | 134 tests, all passing |
+| services/sim/main.py | COMPLETE | FastAPI backend — 7 routes incl. /surface; stock+option presets |
+| apps/web/ | COMPLETE | Next.js frontend — dark theme, landing + results + 3D surface |
 | apps/web/components/HedgeSurface.tsx | COMPLETE | Interactive 3-mode Plotly 3D surface |
 | results/raw/ | EMPTY | populated by runner |
 | results/processed/ | EMPTY | populated by runner |

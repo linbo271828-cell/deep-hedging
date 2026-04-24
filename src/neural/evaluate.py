@@ -20,8 +20,8 @@ from src.risk.entropic import entropic_risk as entropic_risk_fn
 from src.utils.seeds import derive_seed
 
 if TYPE_CHECKING:
-    from src.experiments.configs import EvaluationConfig, MarketConfig, PayoffConfig, TrainingConfig
-    from src.neural.architectures import HedgeNet
+    from src.experiments.configs import EvaluationConfig, HedgeUniverseConfig, MarketConfig, PayoffConfig, TrainingConfig
+    from src.neural.architectures import HedgeNet, HedgeNetMulti
 
 
 @dataclass
@@ -240,3 +240,160 @@ def evaluate(
     """
     result, _ = evaluate_raw(model, market_config, training_config, eval_config, payoff_config)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Multi-instrument evaluation (stock + option hedge universe)
+# ---------------------------------------------------------------------------
+
+def evaluate_raw_multi(
+    model: "HedgeNetMulti",
+    market_config: "MarketConfig",
+    training_config: "TrainingConfig",
+    eval_config: "EvaluationConfig",
+    hedge_universe_config: "HedgeUniverseConfig",
+    payoff_config: "PayoffConfig | None" = None,
+) -> tuple["EvaluationResult", np.ndarray]:
+    """Evaluate a HedgeNetMulti on held-out paths for the stock + option universe.
+
+    Returns
+    -------
+    tuple[EvaluationResult, np.ndarray]
+        (metrics, pnl_array) where pnl_array has shape (eval_config.n_paths,).
+    """
+    from src.hedging.hedge_universe import StockPlusOptionUniverse
+    from src.models.gbm import time_grid as make_time_grid
+
+    eval_seed = derive_seed(training_config.seed + eval_config.seed_offset, "eval")
+    gbm = GBM(s0=market_config.s0, mu=market_config.r, sigma=market_config.sigma)
+    paths = gbm.sample_paths(
+        n_paths=eval_config.n_paths,
+        n_steps=market_config.n_steps,
+        T=market_config.T,
+        seed=eval_seed,
+    )
+    tg = make_time_grid(market_config.n_steps, market_config.T)
+
+    universe = StockPlusOptionUniverse(market_config, hedge_universe_config)
+    hedge_prices = universe.hedge_option_prices_along_paths(paths, tg)
+
+    k_h = hedge_universe_config.hedge_option_strike
+    v_hedge_0 = float(universe.hedge_option_price(
+        np.array([market_config.s0]), market_config.T
+    )[0])
+    if v_hedge_0 < 1e-8:
+        v_hedge_0 = 1.0
+
+    if payoff_config is not None and payoff_config.payoff_type != "call":
+        from src.payoffs.dispatch import get_payoff_spec
+        spec = get_payoff_spec(payoff_config, market_config)
+        initial_option_price = spec.initial_option_price
+        payoff_fn = spec.payoff_fn
+        delta_transform = spec.delta_transform
+    else:
+        initial_option_price = float(
+            call_price(market_config.s0, market_config.k, market_config.r,
+                       market_config.sigma, market_config.T)
+        )
+        payoff_fn = None
+        delta_transform = None
+
+    n_paths_count = paths.shape[0]
+    n_steps = paths.shape[1] - 1
+    T = tg[-1]
+    dt = T / n_steps
+
+    model.eval()
+    total_cost = np.zeros(n_paths_count)
+    total_turnover = np.zeros(n_paths_count)
+
+    with torch.no_grad():
+        paths_t = torch.tensor(paths, dtype=torch.float32)
+        hedge_t = torch.tensor(hedge_prices, dtype=torch.float32)
+
+        s0 = market_config.s0
+        ds_prev = torch.zeros(n_paths_count, dtype=torch.float32)
+        dh_prev = torch.zeros(n_paths_count, dtype=torch.float32)
+
+        s_curr = paths_t[:, 0]
+        h_curr = hedge_t[:, 0]
+
+        feats = torch.stack(
+            [s_curr / s0,
+             torch.full((n_paths_count,), T),
+             ds_prev, dh_prev,
+             h_curr / v_hedge_0],
+            dim=1,
+        )
+        out = model(feats)
+        ds = (delta_transform(out[:, 0]) if delta_transform is not None else out[:, 0])
+        dh = out[:, 1]
+
+        cost0_s = (torch.abs(ds) * s_curr * training_config.cost_rate).numpy()
+        cost0_h = (torch.abs(dh) * h_curr * training_config.cost_rate).numpy()
+        total_cost += cost0_s + cost0_h
+        total_turnover += np.abs(ds.numpy()) + np.abs(dh.numpy())
+
+        cash = (initial_option_price
+                - (ds * s_curr).numpy() - cost0_s
+                - (dh * h_curr).numpy() - cost0_h)
+        ds_np = ds.numpy()
+        dh_np = dh.numpy()
+
+        for i in range(1, n_steps):
+            s_curr_np = paths[:, i]
+            h_curr_np = hedge_prices[:, i]
+            tau_i = T - i * dt
+            s_curr_t = paths_t[:, i]
+            h_curr_t = hedge_t[:, i]
+
+            feats = torch.stack(
+                [s_curr_t / s0,
+                 torch.full((n_paths_count,), tau_i),
+                 torch.tensor(ds_np, dtype=torch.float32),
+                 torch.tensor(dh_np, dtype=torch.float32),
+                 h_curr_t / v_hedge_0],
+                dim=1,
+            )
+            out_new = model(feats)
+            ds_new = (
+                delta_transform(out_new[:, 0]).numpy()
+                if delta_transform is not None
+                else out_new[:, 0].numpy()
+            )
+            dh_new = out_new[:, 1].numpy()
+
+            trade_s = ds_new - ds_np
+            trade_h = dh_new - dh_np
+            cost_s = np.abs(trade_s) * s_curr_np * training_config.cost_rate
+            cost_h = np.abs(trade_h) * h_curr_np * training_config.cost_rate
+            total_cost += cost_s + cost_h
+            total_turnover += np.abs(trade_s) + np.abs(trade_h)
+
+            cash = cash - trade_s * s_curr_np - cost_s - trade_h * h_curr_np - cost_h
+            ds_np = ds_new
+            dh_np = dh_new
+
+        s_T = paths[:, n_steps]
+        liq_cost_s = np.abs(ds_np) * s_T * training_config.cost_rate
+        total_cost += liq_cost_s
+        total_turnover += np.abs(ds_np)
+
+        cash = cash + ds_np * s_T - liq_cost_s
+
+        hedge_payoff = np.maximum(s_T - k_h, 0.0)
+        cash = cash + dh_np * hedge_payoff
+
+        payoff = payoff_fn(s_T) if payoff_fn is not None else np.maximum(s_T - 0.0, 0.0)
+        pnl = cash - payoff
+
+    result = EvaluationResult(
+        mean_pnl=float(np.mean(pnl)),
+        std_pnl=float(np.std(pnl)),
+        cvar_95=float(cvar(pnl, alpha=eval_config.alpha)),
+        entropic_risk=float(entropic_risk_fn(pnl, lambda_=eval_config.lambda_)),
+        expected_cost=float(np.mean(total_cost)),
+        turnover=float(np.mean(total_turnover)),
+        n_paths=eval_config.n_paths,
+    )
+    return result, pnl

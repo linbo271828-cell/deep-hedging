@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from src.hedging.pnl import hedge_pnl
+from src.hedging.pnl import hedge_pnl, hedge_pnl_multi
 from src.payoffs import european as bs
 
 if TYPE_CHECKING:
@@ -108,4 +108,61 @@ def classical_delta_pnl(
         sigma=sigma,
         cost_rate=cost_rate,
         initial_option_price=initial_option_price,
+    )
+
+
+def classical_delta_pnl_stock_option(
+    paths: np.ndarray,
+    hedge_option_prices: np.ndarray,
+    time_grid: np.ndarray,
+    payoff_spec: "PayoffSpec",
+    cost_rate: float,
+    k_h: float,
+) -> np.ndarray:
+    """Classical benchmark for the stock + option hedge universe.
+
+    Stock leg : payoff-specific BS delta (same as stock_only benchmark).
+    Hedge leg : ZERO — the classical baseline does not use the hedge option.
+
+    This is an explicitly asymmetric comparison: the neural hedger has access
+    to both instruments while the classical baseline uses only the stock.
+    The asymmetry is intentional and documented; it highlights the additional
+    value the neural hedger can extract from the hedge option instrument.
+
+    Parameters
+    ----------
+    paths:
+        Stock price paths, shape (n_paths, n_steps+1).
+    hedge_option_prices:
+        Precomputed hedge option prices, shape (n_paths, n_steps+1).
+    time_grid:
+        Uniform time points [0, T], shape (n_steps+1,).
+    payoff_spec:
+        PayoffSpec for the main option (provides stock delta and payoff).
+    cost_rate:
+        Proportional transaction cost rate.
+    k_h:
+        Strike of the hedge option (used for terminal hedge-option payoff = 0).
+
+    Returns
+    -------
+    np.ndarray
+        Terminal P&L per path, shape (n_paths,).
+    """
+    n_paths = paths.shape[0]
+
+    def zero_hedge_fn(s: np.ndarray, tau: float) -> np.ndarray:
+        return np.zeros(len(np.atleast_1d(s)), dtype=float)
+
+    return hedge_pnl_multi(
+        paths=paths,
+        hedge_option_prices=hedge_option_prices,
+        stock_delta_fn=payoff_spec.classical_delta_fn,
+        hedge_delta_fn=zero_hedge_fn,
+        time_grid=time_grid,
+        payoff_fn=payoff_spec.payoff_fn,
+        initial_option_price=payoff_spec.initial_option_price,
+        cost_rate=cost_rate,
+        r=0.0,
+        k_h=k_h,
     )

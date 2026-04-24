@@ -17,6 +17,9 @@ export interface Preset {
   delta_range: string;
   benchmark_label: string;
   classical_description: string;
+  hedge_universe_display?: string;
+  hedge_universe_description?: string;
+  benchmark_note?: string;
 }
 
 export interface RunStatus {
@@ -59,6 +62,9 @@ export interface RunResults {
   delta_range: string;
   benchmark_label: string;
   classical_description: string;
+  hedge_universe_display?: string;
+  hedge_universe_description?: string;
+  benchmark_note?: string;
   neural: SummaryRow;
   classical: SummaryRow;
 }

@@ -185,6 +185,13 @@ export default function RunPage() {
               <span className="info-value">{results.neural.n_paths.toLocaleString()}</span>
             </div>
             <div className="info-item">
+              <span className="info-label">Hedge instruments</span>
+              <span className="info-value">
+                {results.hedge_universe_display ||
+                  results.neural.hedge_universe.replace(/_/g, " ")}
+              </span>
+            </div>
+            <div className="info-item">
               <span className="info-label">Architecture</span>
               <span className="info-value">
                 {results.neural.n_layers}×{results.neural.hidden_dim} FFN,{" "}
@@ -192,6 +199,24 @@ export default function RunPage() {
               </span>
             </div>
           </div>
+
+          {/* Hedge universe note for stock+option experiments */}
+          {results.benchmark_note && (
+            <div
+              style={{
+                margin: "0 0 16px",
+                padding: "10px 14px",
+                background: "rgba(245,158,11,0.07)",
+                border: "1px solid rgba(245,158,11,0.2)",
+                borderRadius: 6,
+                fontSize: "0.8rem",
+                color: "#fcd34d",
+                lineHeight: 1.6,
+              }}
+            >
+              <strong>Benchmark note:</strong> {results.benchmark_note}
+            </div>
+          )}
 
           {/* Contract structure card */}
           {results.payoff_formula && (
