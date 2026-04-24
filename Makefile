@@ -46,6 +46,11 @@ clean:
 run-backend:
 	PYTHONPATH=. .venv/bin/uvicorn services.sim.main:app --reload --port 8000
 
+# Run the FastAPI backend in production mode (no --reload, binds 0.0.0.0).
+# Override port with PORT=XXXX make run-backend-prod
+run-backend-prod:
+	PYTHONPATH=. PORT=$${PORT:-8000} .venv/bin/uvicorn services.sim.main:app --host 0.0.0.0 --port $${PORT:-8000}
+
 # Run the Next.js frontend on port 3000 (in a separate terminal).
 run-frontend:
 	cd apps/web && npm run dev

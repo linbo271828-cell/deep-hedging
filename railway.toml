@@ -1,0 +1,12 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+# Railway injects $PORT automatically; uvicorn must bind 0.0.0.0.
+startCommand = "uvicorn services.sim.main:app --host 0.0.0.0 --port $PORT"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+# healthcheckPath tells Railway when the service is ready.
+healthcheckPath = "/"
+healthcheckTimeout = 60

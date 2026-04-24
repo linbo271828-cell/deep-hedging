@@ -59,13 +59,26 @@ from src.utils.seeds import derive_seed
 
 app = FastAPI(title="Deep Hedging Lab API", version="0.1.0")
 
+# ---------------------------------------------------------------------------
+# CORS — origins sourced from env so Vercel URL can be added at deploy time.
+# ALLOWED_ORIGINS: comma-separated list (default: localhost:3000 for local dev).
+# ---------------------------------------------------------------------------
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000")
+_ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Accept"],
 )
+
+
+@app.get("/")
+def health_check() -> dict[str, str]:
+    """Health / liveness endpoint for Railway."""
+    return {"status": "ok", "service": "deep-hedging-lab-api", "version": "0.1.0"}
 
 # ---------------------------------------------------------------------------
 # Payoff metadata — single source of truth for UI-facing descriptions
