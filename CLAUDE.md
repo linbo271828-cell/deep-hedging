@@ -102,8 +102,13 @@ Do NOT add features beyond v1 scope without explicit user instruction.
 | tests/test_hedge_universe.py | COMPLETE | 17 stock+option smoke tests |
 | tests/ | COMPLETE | 134 tests, all passing |
 | services/sim/main.py | COMPLETE | FastAPI backend — 7 routes incl. /surface; stock+option presets |
-| apps/web/ | COMPLETE | Next.js frontend — dark theme, landing + results + 3D surface |
+| apps/web/ | COMPLETE | Next.js frontend — dark theme, audience modes, landing + results + 3D surface |
 | apps/web/components/HedgeSurface.tsx | COMPLETE | Interactive 3-mode Plotly 3D surface |
+| apps/web/lib/mode.tsx | COMPLETE | ModeProvider + useMode hook + localStorage persistence |
+| apps/web/components/ModeSelector.tsx | COMPLETE | First-visit mode picker modal |
+| apps/web/components/ModeSwitcher.tsx | COMPLETE | Header mode switcher (Beginner/Guided/Expert) |
+| apps/web/components/ModeText.tsx | COMPLETE | Mode-conditional content utility |
+| apps/web/components/ExplainBox.tsx | COMPLETE | Collapsible explanation panel (auto-open in beginner) |
 | results/raw/ | EMPTY | populated by runner |
 | results/processed/ | EMPTY | populated by runner |
 | results/reports/ | EMPTY | populated by reporting |

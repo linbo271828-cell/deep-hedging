@@ -4,6 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api, type RunResults, type RunStatus, type SurfaceData } from "@/lib/api";
 import { HedgeSurface } from "@/components/HedgeSurface";
+import { useMode } from "@/lib/mode";
+import { ModeText, ModeShow } from "@/components/ModeText";
+import { ExplainBox } from "@/components/ExplainBox";
 
 function fmt(v: number, digits = 4): string {
   return v.toFixed(digits);
@@ -38,6 +41,7 @@ export default function RunPage() {
   const params = useParams();
   const router = useRouter();
   const runId = params.id as string;
+  const { mode } = useMode();
 
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [results, setResults] = useState<RunResults | null>(null);
@@ -278,7 +282,78 @@ export default function RunPage() {
             </div>
           )}
 
+          {/* ---------------------------------------------------------------- */}
+          {/* Metrics table                                                     */}
+          {/* ---------------------------------------------------------------- */}
           <p className="result-section-title">Neural vs Classical — Key Metrics</p>
+
+          <ExplainBox title="What do these metrics measure?">
+            <ModeText
+              beginner={
+                <ul style={{ margin: "6px 0 0", paddingLeft: 18, lineHeight: 1.75 }}>
+                  <li>
+                    <strong>CVaR 95%</strong> — Conditional Value-at-Risk: the average loss in
+                    the worst 5% of scenarios. Think of it as measuring how bad things get when
+                    they go wrong. A neural hedger trained to minimize this is explicitly
+                    optimised to protect against tail risk.
+                  </li>
+                  <li>
+                    <strong>Entropic Risk</strong> — A risk measure that penalises large losses
+                    exponentially more than small ones. Lower is better. Unlike CVaR, it captures
+                    the full loss distribution in a single number.
+                  </li>
+                  <li>
+                    <strong>Mean P&amp;L</strong> — The average profit/loss across all test
+                    scenarios. For a well-calibrated hedge, this should be close to zero — the
+                    hedge should neither systematically gain nor lose money.
+                  </li>
+                  <li>
+                    <strong>Std P&amp;L</strong> — Standard deviation of P&amp;L across scenarios
+                    — how variable the outcomes are. Lower means the hedge is more consistent
+                    and predictable.
+                  </li>
+                  <li>
+                    <strong>Expected Cost</strong> — Average transaction cost from rebalancing
+                    the hedge portfolio at each time step. High turnover × high cost rate =
+                    expensive strategy.
+                  </li>
+                  <li>
+                    <strong>Avg Turnover</strong> — How much the hedge position changes on
+                    average per time step. The neural hedger often trades less than classical
+                    hedging because it learns to account for costs.
+                  </li>
+                </ul>
+              }
+              guided={
+                <ul style={{ margin: "6px 0 0", paddingLeft: 18, lineHeight: 1.75 }}>
+                  <li>
+                    <strong>CVaR 95%:</strong> average loss in worst 5% of paths — the training
+                    objective
+                  </li>
+                  <li>
+                    <strong>Entropic Risk:</strong> exponentially-weighted loss measure,
+                    complements CVaR
+                  </li>
+                  <li>
+                    <strong>Mean P&amp;L:</strong> should be near zero for a correctly priced
+                    hedge
+                  </li>
+                  <li>
+                    <strong>Std P&amp;L:</strong> consistency of hedging performance across paths
+                  </li>
+                  <li>
+                    <strong>Expected Cost:</strong> total friction from rebalancing, proportional
+                    to turnover × cost rate
+                  </li>
+                  <li>
+                    <strong>Avg Turnover:</strong> per-step position change; neural strategies
+                    learn to reduce this
+                  </li>
+                </ul>
+              }
+            />
+          </ExplainBox>
+
           <table className="metrics-table">
             <thead>
               <tr>
@@ -329,9 +404,39 @@ export default function RunPage() {
             </tbody>
           </table>
 
+          {/* Interpretation panel — beginner + guided only */}
+          <ModeShow modes={["beginner", "guided"]}>
+            <ExplainBox title="How to read these results">
+              <ModeText
+                beginner={
+                  <p style={{ margin: "6px 0 0" }}>
+                    If the neural hedger has a lower CVaR 95%, it means it better protected
+                    the option book against tail losses — even accounting for transaction costs.
+                    A lower Std P&amp;L means it hedged more consistently. The classical baseline
+                    uses the theoretical delta from the Black-Scholes formula and has no
+                    knowledge of costs; it may trade more and pay more in friction. Whether
+                    neural beats classical depends on the payoff type, cost regime, and whether
+                    the neural network had enough training paths to converge.
+                  </p>
+                }
+                guided={
+                  <p style={{ margin: "6px 0 0" }}>
+                    Lower CVaR + lower Std P&amp;L = better tail risk management with less
+                    variance. Neural advantage tends to be larger at higher cost rates (≥5bps)
+                    where the classical hedge&apos;s turnover becomes expensive. At zero cost,
+                    both should converge to similar performance.
+                  </p>
+                }
+              />
+            </ExplainBox>
+          </ModeShow>
+
           <div className="divider" />
 
-          <p className="result-section-title">P&L Distribution</p>
+          {/* ---------------------------------------------------------------- */}
+          {/* P&L Distribution                                                 */}
+          {/* ---------------------------------------------------------------- */}
+          <p className="result-section-title">P&amp;L Distribution</p>
           <div className="plot-wrap">
             {!plotLoaded && (
               <div
@@ -356,8 +461,34 @@ export default function RunPage() {
               onError={() => setPlotLoaded(true)}
             />
             <div className="plot-caption">
-              Terminal P&L distribution over {results.neural.n_paths.toLocaleString()} out-of-sample paths.
-              Dashed line = mean, dotted = 5th percentile.
+              <ModeText
+                beginner={
+                  <>
+                    Each bar shows how often a particular profit/loss occurred across{" "}
+                    {results.neural.n_paths.toLocaleString()} independent simulated market
+                    paths. A tight distribution centred near zero means the hedge worked well
+                    — it consistently covered the option&apos;s risk. The dashed line marks
+                    the average; the dotted line marks the 5th percentile (the &ldquo;bad
+                    day&rdquo; threshold). The neural hedger is trained to push that lower
+                    tail to the right.
+                  </>
+                }
+                guided={
+                  <>
+                    P&amp;L distribution over {results.neural.n_paths.toLocaleString()}{" "}
+                    out-of-sample paths. Dashed = mean, dotted = 5th percentile. The neural
+                    strategy optimises the left tail; classical delta hedging is unaware of
+                    transaction costs.
+                  </>
+                }
+                expert={
+                  <>
+                    Terminal P&amp;L distribution over{" "}
+                    {results.neural.n_paths.toLocaleString()} out-of-sample paths. Dashed
+                    line = mean, dotted = 5th percentile.
+                  </>
+                }
+              />
             </div>
           </div>
 
@@ -371,12 +502,35 @@ export default function RunPage() {
               Neural Hedge Surface vs.{" "}
               {results.classical_description || "Classical Benchmark"}
             </p>
-            <p style={{ fontSize: "0.875rem", color: "var(--gray-600)", lineHeight: 1.6 }}>
-              3D surfaces showing the hedge ratio Δ as a function of stock price and time to
-              maturity. Switch modes to compare the learned neural policy, the payoff-specific
-              classical benchmark ({results.benchmark_label || "analytic delta"}), and their
-              signed difference. Drag to rotate, scroll to zoom, hover for exact values.
-            </p>
+
+            <ModeText
+              beginner={
+                <p style={{ fontSize: "0.875rem", color: "var(--gray-600)", lineHeight: 1.6 }}>
+                  This surface shows the hedge ratio — what fraction of the underlying stock
+                  to hold — at every combination of stock price and time remaining. The neural
+                  hedger learns this 3D shape from data; the classical benchmark derives it
+                  from a formula. The &ldquo;Difference&rdquo; view shows where they disagree
+                  most. Near option expiry (low τ) and deep in-the-money, you&apos;ll often
+                  see the largest deviations.
+                </p>
+              }
+              guided={
+                <p style={{ fontSize: "0.875rem", color: "var(--gray-600)", lineHeight: 1.6 }}>
+                  Hedge ratio Δ as a function of stock price S and time-to-maturity τ. Neural
+                  surface learned via CVaR minimisation; benchmark surface from analytic delta.
+                  &ldquo;Difference&rdquo; mode highlights regions of strategic disagreement.
+                </p>
+              }
+              expert={
+                <p style={{ fontSize: "0.875rem", color: "var(--gray-600)", lineHeight: 1.6 }}>
+                  3D surfaces showing the hedge ratio Δ as a function of stock price and time
+                  to maturity. Switch modes to compare the learned neural policy, the
+                  payoff-specific classical benchmark (
+                  {results.benchmark_label || "analytic delta"}), and their signed difference.
+                  Drag to rotate, scroll to zoom, hover for exact values.
+                </p>
+              }
+            />
           </div>
 
           {surfaceLoading && (
