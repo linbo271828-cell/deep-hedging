@@ -11,6 +11,12 @@ export interface Preset {
   hedge_universe: string;
   n_epochs: number;
   est_seconds: number;
+  payoff_display_name: string;
+  payoff_formula: string;
+  payoff_profile: string;
+  delta_range: string;
+  benchmark_label: string;
+  classical_description: string;
 }
 
 export interface RunStatus {
@@ -47,6 +53,12 @@ export interface RunResults {
   run_id: string;
   preset_id: string;
   preset_name: string;
+  payoff_display_name: string;
+  payoff_formula: string;
+  payoff_profile: string;
+  delta_range: string;
+  benchmark_label: string;
+  classical_description: string;
   neural: SummaryRow;
   classical: SummaryRow;
 }

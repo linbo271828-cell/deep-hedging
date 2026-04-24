@@ -193,13 +193,75 @@ export default function RunPage() {
             </div>
           </div>
 
+          {/* Contract structure card */}
+          {results.payoff_formula && (
+            <div
+              style={{
+                margin: "0 0 24px",
+                padding: "14px 18px",
+                background: "#0f172a",
+                border: "1px solid #1e293b",
+                borderRadius: 8,
+                fontSize: "0.84rem",
+                lineHeight: 1.65,
+                color: "var(--gray-400)",
+              }}
+            >
+              <div
+                style={{
+                  fontWeight: 600,
+                  color: "var(--gray-600)",
+                  fontSize: "0.78rem",
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  marginBottom: 10,
+                }}
+              >
+                Contract Structure
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 40px" }}>
+                <div>
+                  <span style={{ color: "var(--gray-600)", fontWeight: 600 }}>Payoff:&nbsp;</span>
+                  <code style={{ fontFamily: "monospace", color: "#93c5fd", fontSize: "0.82rem" }}>
+                    {results.payoff_formula}
+                  </code>
+                </div>
+                {results.delta_range && (
+                  <div>
+                    <span style={{ color: "var(--gray-600)", fontWeight: 600 }}>
+                      Δ range:&nbsp;
+                    </span>
+                    <code style={{ fontFamily: "monospace", fontSize: "0.82rem" }}>
+                      {results.delta_range}
+                    </code>
+                  </div>
+                )}
+                {results.benchmark_label && (
+                  <div>
+                    <span style={{ color: "var(--gray-600)", fontWeight: 600 }}>
+                      Benchmark:&nbsp;
+                    </span>
+                    {results.benchmark_label}
+                  </div>
+                )}
+              </div>
+              {results.payoff_profile && (
+                <div style={{ marginTop: 8, color: "var(--gray-500)" }}>
+                  {results.payoff_profile}
+                </div>
+              )}
+            </div>
+          )}
+
           <p className="result-section-title">Neural vs Classical — Key Metrics</p>
           <table className="metrics-table">
             <thead>
               <tr>
                 <th>Metric</th>
                 <th className="right">Neural Hedger</th>
-                <th className="right">Classical (BS Δ)</th>
+                <th className="right">
+                  {results.benchmark_label ? results.benchmark_label : "Classical (BS Δ)"}
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -281,12 +343,14 @@ export default function RunPage() {
 
           <div style={{ marginBottom: 16 }}>
             <p className="result-section-title" style={{ marginBottom: 4 }}>
-              Neural Hedge Surface vs. Black-Scholes Delta
+              Neural Hedge Surface vs.{" "}
+              {results.classical_description || "Classical Benchmark"}
             </p>
             <p style={{ fontSize: "0.875rem", color: "var(--gray-600)", lineHeight: 1.6 }}>
-              3D surfaces showing the hedge ratio Δ as a function of stock price and time to maturity.
-              Switch modes to compare the learned neural policy, the analytic Black-Scholes delta,
-              and their signed difference. Drag to rotate, scroll to zoom, hover for exact values.
+              3D surfaces showing the hedge ratio Δ as a function of stock price and time to
+              maturity. Switch modes to compare the learned neural policy, the payoff-specific
+              classical benchmark ({results.benchmark_label || "analytic delta"}), and their
+              signed difference. Drag to rotate, scroll to zoom, hover for exact values.
             </p>
           </div>
 

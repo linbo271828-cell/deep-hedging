@@ -42,13 +42,16 @@ export default function HomePage() {
     }
   }
 
+  const selectedPreset = presets.find((p) => p.id === selected) ?? null;
+
   return (
     <div className="container" style={{ paddingBottom: 60 }}>
       <h2 className="page-title">Experiment Launcher</h2>
       <p className="page-subtitle">
-        Deep Hedging Lab compares <strong>classical Black-Scholes delta hedging</strong> against
-        a <strong>learned neural strategy</strong> that minimises CVaR of terminal P&amp;L.
-        Both run on simulated GBM paths of a short European call position.
+        Deep Hedging Lab compares <strong>classical delta hedging</strong> against a{" "}
+        <strong>learned neural strategy</strong> that minimises CVaR of terminal P&amp;L.
+        Both run on simulated GBM paths across four payoff families — European call, put,
+        bull call spread, and straddle — under proportional transaction costs.
         Choose a preset to train the neural hedger and see the comparison.
       </p>
 
@@ -80,9 +83,25 @@ export default function HomePage() {
               >
                 <div className="card-title">{preset.name}</div>
                 <div className="card-desc">{preset.description}</div>
+                {preset.payoff_formula && (
+                  <div
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: "0.78rem",
+                      color: "var(--gray-500)",
+                      marginTop: 6,
+                      padding: "3px 7px",
+                      background: "rgba(255,255,255,0.04)",
+                      borderRadius: 4,
+                      display: "inline-block",
+                    }}
+                  >
+                    {preset.payoff_formula}
+                  </div>
+                )}
                 <div className="card-meta">
                   <span className="badge blue">{preset.market_model}</span>
-                  <span className="badge">{preset.payoff_type}</span>
+                  <span className="badge">{preset.payoff_display_name || preset.payoff_type}</span>
                   <span className="badge">{preset.hedge_universe}</span>
                   <span className={`badge ${preset.cost_rate > 0 ? "amber" : "green"}`}>
                     {preset.cost_rate > 0
@@ -94,6 +113,64 @@ export default function HomePage() {
               </div>
             ))}
           </div>
+
+          {/* Selected preset detail panel */}
+          {selectedPreset && (
+            <div
+              style={{
+                margin: "20px 0",
+                padding: "16px 20px",
+                background: "#0f172a",
+                border: "1px solid #1e293b",
+                borderRadius: 8,
+                fontSize: "0.84rem",
+                lineHeight: 1.65,
+                color: "var(--gray-400)",
+              }}
+            >
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "20px 40px" }}>
+                {selectedPreset.payoff_formula && (
+                  <div>
+                    <span style={{ color: "var(--gray-600)", fontWeight: 600 }}>
+                      Payoff:&nbsp;
+                    </span>
+                    <code
+                      style={{
+                        fontFamily: "monospace",
+                        color: "#93c5fd",
+                        fontSize: "0.82rem",
+                      }}
+                    >
+                      {selectedPreset.payoff_formula}
+                    </code>
+                  </div>
+                )}
+                {selectedPreset.delta_range && (
+                  <div>
+                    <span style={{ color: "var(--gray-600)", fontWeight: 600 }}>
+                      Δ range:&nbsp;
+                    </span>
+                    <code style={{ fontFamily: "monospace", fontSize: "0.82rem" }}>
+                      {selectedPreset.delta_range}
+                    </code>
+                  </div>
+                )}
+                {selectedPreset.benchmark_label && (
+                  <div>
+                    <span style={{ color: "var(--gray-600)", fontWeight: 600 }}>
+                      Benchmark:&nbsp;
+                    </span>
+                    {selectedPreset.benchmark_label}
+                  </div>
+                )}
+              </div>
+              {selectedPreset.payoff_profile && (
+                <div style={{ marginTop: 8, color: "var(--gray-500)" }}>
+                  {selectedPreset.payoff_profile}
+                </div>
+              )}
+            </div>
+          )}
 
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <button
@@ -120,11 +197,12 @@ export default function HomePage() {
           <div className="divider" />
 
           <div style={{ fontSize: "0.85rem", color: "var(--gray-400)", lineHeight: 1.6 }}>
-            <strong style={{ color: "var(--gray-600)" }}>How it works:</strong> The neural hedger
-            is a feedforward network trained end-to-end via CVaR minimisation on 8 000 simulated
-            GBM paths per epoch. After training it is evaluated on 20 000 fresh paths. The
-            classical baseline uses exact Black-Scholes delta at each rebalancing step with the
-            same cost structure.
+            <strong style={{ color: "var(--gray-600)" }}>How it works:</strong> The neural
+            hedger is a feedforward network trained end-to-end via CVaR minimisation on 8 000
+            simulated GBM paths per epoch. After training it is evaluated on 20 000 fresh paths.
+            The classical baseline uses the payoff-specific analytic delta at each rebalancing
+            step — Black-Scholes N(d₁) for calls, N(d₁)−1 for puts, net leg deltas for spreads
+            and straddles — under the same cost structure.
           </div>
         </>
       )}

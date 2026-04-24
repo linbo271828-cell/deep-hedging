@@ -68,6 +68,54 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
+# Payoff metadata — single source of truth for UI-facing descriptions
+# ---------------------------------------------------------------------------
+
+_PAYOFF_METADATA: dict[str, dict[str, str]] = {
+    "call": {
+        "payoff_display_name": "European Call",
+        "payoff_formula": "max(S_T − K, 0)",
+        "payoff_profile": "Unbounded upside; zero payoff when the stock finishes below strike.",
+        "delta_range": "[0, 1]",
+        "benchmark_label": "BS Call Δ = N(d₁)",
+        "classical_description": "Black-Scholes call delta N(d₁)",
+    },
+    "put": {
+        "payoff_display_name": "European Put",
+        "payoff_formula": "max(K − S_T, 0)",
+        "payoff_profile": "Profits from downward moves; zero payoff above strike. "
+                          "Negative delta — the hedger holds a short stock position.",
+        "delta_range": "[-1, 0]",
+        "benchmark_label": "BS Put Δ = N(d₁) − 1",
+        "classical_description": "Black-Scholes put delta N(d₁)−1",
+    },
+    "call_spread": {
+        "payoff_display_name": "Bull Call Spread",
+        "payoff_formula": "max(S_T − K_lo, 0) − max(S_T − K_hi, 0)",
+        "payoff_profile": "Bounded payoff capped at K_hi − K_lo. "
+                          "No single analytic BS delta — benchmark uses net leg deltas.",
+        "delta_range": "[0, 1]",
+        "benchmark_label": "Net BS Δ = Δ_call(K_lo) − Δ_call(K_hi)",
+        "classical_description": "Net BS delta: call_delta(K_lo)−call_delta(K_hi)",
+    },
+    "straddle": {
+        "payoff_display_name": "Straddle",
+        "payoff_formula": "max(S_T − K, 0) + max(K − S_T, 0) = |S_T − K|",
+        "payoff_profile": "Profits from large moves in either direction. "
+                          "ATM delta ≈ 0 by symmetry; the network learns a near-neutral position.",
+        "delta_range": "[-1, 1]",
+        "benchmark_label": "Net BS Δ = 2·N(d₁) − 1",
+        "classical_description": "Net BS delta: call_delta+put_delta = 2·N(d₁)−1",
+    },
+}
+
+
+def _payoff_meta(payoff_type_key: str) -> dict[str, str]:
+    """Look up payoff metadata by internal key (call / put / call_spread / straddle)."""
+    return _PAYOFF_METADATA.get(payoff_type_key, {})
+
+
+# ---------------------------------------------------------------------------
 # Preset definitions
 # ---------------------------------------------------------------------------
 
@@ -78,10 +126,11 @@ PRESETS: dict[str, dict[str, Any]] = {
         "id": "gbm_call_zero_cost",
         "name": "GBM Call — Zero Cost",
         "description": (
-            "Neural hedger trained under zero transaction costs. "
-            "At convergence it should recover the Black-Scholes delta, "
-            "demonstrating that the network learns the theoretically optimal strategy."
+            "The zero-cost baseline: neural hedger trained with no transaction costs. "
+            "At convergence the network must recover the Black-Scholes delta, providing "
+            "a clean theoretical gate. Pass this and the network is learning something real."
         ),
+        **_payoff_meta("call"),
         "cost_rate": 0.0,
         "market_model": "GBM",
         "payoff_type": "European Call",
@@ -104,10 +153,12 @@ PRESETS: dict[str, dict[str, Any]] = {
         "id": "gbm_call_5bps",
         "name": "GBM Call — 5 bps Cost",
         "description": (
-            "Neural hedger trained with 5 basis-point proportional transaction costs. "
-            "The learned strategy reduces rebalancing frequency to trade off "
-            "CVaR against friction, outperforming the naive BS delta hedge."
+            "Neural hedger trained under 5 bp proportional transaction costs. "
+            "The optimal strategy is no longer BS delta — the network learns to "
+            "trade less aggressively, reducing friction while controlling CVaR. "
+            "This is the headline result from Buehler et al. (2019)."
         ),
+        **_payoff_meta("call"),
         "cost_rate": 0.0005,
         "market_model": "GBM",
         "payoff_type": "European Call",
@@ -130,11 +181,12 @@ PRESETS: dict[str, dict[str, Any]] = {
         "id": "gbm_put_5bps",
         "name": "GBM Put — 5 bps Cost",
         "description": (
-            "Neural hedger for a short European put with 5 bps costs. "
-            "Classical benchmark: BS put delta N(d₁)−1 ∈ [−1, 0]. "
-            "The network output is shifted (sigmoid − 1) to match this range. "
-            "Demonstrates deep hedging generalizes beyond calls."
+            "Short European put hedged with 5 bp costs. "
+            "The classical benchmark is BS put delta N(d₁)−1 ∈ [−1, 0]: "
+            "a short stock position that grows toward zero as the stock rises above strike. "
+            "Tests whether deep hedging generalises to negatively-sloped payoffs."
         ),
+        **_payoff_meta("put"),
         "cost_rate": 0.0005,
         "market_model": "GBM",
         "payoff_type": "European Put",
@@ -157,10 +209,12 @@ PRESETS: dict[str, dict[str, Any]] = {
         "id": "gbm_call_spread_5bps",
         "name": "GBM Bull Call Spread — 5 bps Cost",
         "description": (
-            "Neural hedger for a short bull call spread (long K=95, short K=105) with 5 bps costs. "
-            "Classical benchmark: net BS delta = call_delta(95) − call_delta(105) ∈ [0, 1]. "
-            "The bounded payoff profile reduces tail risk vs. a naked call."
+            "Short bull call spread (long K=95, short K=105) under 5 bp costs. "
+            "The payoff is bounded ∈ [0, 10] — no single BS delta applies. "
+            "The classical benchmark sums the two leg deltas. "
+            "Bounded payoff changes the risk-reduction dynamic compared to a naked call."
         ),
+        **_payoff_meta("call_spread"),
         "cost_rate": 0.0005,
         "market_model": "GBM",
         "payoff_type": "Bull Call Spread",
@@ -183,10 +237,12 @@ PRESETS: dict[str, dict[str, Any]] = {
         "id": "gbm_straddle_5bps",
         "name": "GBM Straddle — 5 bps Cost",
         "description": (
-            "Neural hedger for a short straddle (long call + long put at K=100) with 5 bps costs. "
-            "Classical benchmark: net BS delta = 2·N(d₁)−1 ∈ [−1, 1], near 0 ATM. "
-            "The straddle profits from volatility; the neural hedger must manage the symmetric risk."
+            "Short straddle (long call + long put at K=100) under 5 bp costs. "
+            "Payoff = |S_T − K|; the seller profits from low realised volatility. "
+            "The classical benchmark 2·N(d₁)−1 is near zero ATM and ±1 deep ITM/OTM. "
+            "The neural hedger must learn to be nearly delta-neutral at-the-money."
         ),
+        **_payoff_meta("straddle"),
         "cost_rate": 0.0005,
         "market_model": "GBM",
         "payoff_type": "Straddle",
@@ -291,7 +347,12 @@ def _generate_pnl_plot(out_dir: str, config: ExperimentConfig) -> str:
         ax.grid(alpha=0.25)
 
     cost_label = f"{tc.cost_rate * 10_000:.0f} bps" if tc.cost_rate > 0 else "zero cost"
-    fig.suptitle(f"P&L Distribution — GBM Call ({cost_label})", fontsize=14, fontweight="bold")
+    display_name = _PAYOFF_METADATA.get(config.payoff.payoff_type, {}).get(
+        "payoff_display_name", "GBM"
+    )
+    fig.suptitle(
+        f"P&L Distribution — {display_name} ({cost_label})", fontsize=14, fontweight="bold"
+    )
     plt.tight_layout()
 
     plot_path = os.path.join(out_dir, "pnl_distribution.png")
@@ -412,10 +473,19 @@ def get_run_results(run_id: str) -> dict[str, Any]:
     with open(classical_path) as f:
         classical = json.load(f)
 
+    preset = PRESETS.get(state.preset_id, {})
+    payoff_fields = {
+        k: preset.get(k, "")
+        for k in (
+            "payoff_display_name", "payoff_formula", "payoff_profile",
+            "delta_range", "benchmark_label", "classical_description",
+        )
+    }
     return {
         "run_id": run_id,
         "preset_id": state.preset_id,
         "preset_name": state.preset_name,
+        **payoff_fields,
         "neural": neural,
         "classical": classical,
     }
