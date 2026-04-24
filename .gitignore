@@ -11,9 +11,8 @@ venv/
 *.ckpt
 *.pt
 *.pth
-plots/*.png
-!plots/.gitkeep
-plots/*.pdf
+results/plots/*.png
+results/plots/*.pdf
 results/raw/*
 !results/raw/.gitkeep
 results/processed/*
@@ -34,3 +33,6 @@ results/runs/*
 # Next.js build artifacts
 apps/web/.next/
 apps/web/node_modules/
+
+# Claude Code worktree data — never commit
+.claude/

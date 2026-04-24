@@ -39,7 +39,7 @@ clean:
 	rm -rf __pycache__ .pytest_cache .mypy_cache .ruff_cache
 	find . -name "__pycache__" -type d -exec rm -rf {} +
 	find . -name "*.pyc" -delete
-	rm -f plots/*.png plots/*.pdf
+	rm -f results/plots/*.png results/plots/*.pdf
 
 # --- Web / API local dev ---
 # Run the FastAPI backend on port 8000 (in a separate terminal).

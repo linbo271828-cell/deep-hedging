@@ -9,7 +9,7 @@ no-cost hedger's expected P&L is near zero, consistent with the no-arbitrage
 pricing identity.
 
 Outputs:
-    plots/02_pnl_distribution.png
+    results/plots/02_pnl_distribution.png
 
 Prints to stdout:
     Mean, std, CVaR(95%) for both strategies, and the cost drag.
@@ -35,7 +35,7 @@ SEED = 42
 N_PATHS = 20_000
 COST_RATE_WITH = 0.001  # 10 bps
 ALPHA = 0.95
-PLOT_PATH = "plots/02_pnl_distribution.png"
+PLOT_PATH = "results/plots/02_pnl_distribution.png"
 
 
 def main() -> None:

@@ -13,7 +13,7 @@ largest near ATM, where delta changes most rapidly.
 Prerequisite: experiment 03 must have passed the gate (MAD < 0.05).
 
 Outputs:
-    plots/04_hedge_ratio_with_costs.png
+    results/plots/04_hedge_ratio_with_costs.png
 
 Prints to stdout:
     CVaR and expected cost comparison (neural vs classical) at 5 bps.
@@ -45,7 +45,7 @@ TRAIN_SEED = 43             # different seed from experiment 03
 EVAL_SEED = TRAIN_SEED + 10_000
 N_EVAL_PATHS = 20_000
 ALPHA = 0.95
-PLOT_PATH = "plots/04_hedge_ratio_with_costs.png"
+PLOT_PATH = "results/plots/04_hedge_ratio_with_costs.png"
 
 
 def collect_deltas(

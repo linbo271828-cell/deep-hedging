@@ -10,7 +10,7 @@ hedger suffers linearly; the neural hedger learns to trade less and achieves
 lower CVaR at the same expected cost.
 
 Outputs:
-    plots/05_cost_frontier.png   (the headline figure)
+    results/plots/05_cost_frontier.png   (the headline figure)
 
 Prints to stdout:
     Full sweep table: cost level, neural CVaR, classical CVaR, expected costs.
@@ -47,7 +47,7 @@ BASE_SEED = 100              # base seed; each cost level uses BASE_SEED + i
 EVAL_SEED = BASE_SEED + 99_000
 N_EVAL_PATHS = 20_000
 ALPHA = 0.95
-PLOT_PATH = "plots/05_cost_frontier.png"
+PLOT_PATH = "results/plots/05_cost_frontier.png"
 
 
 def train_model_at_cost(

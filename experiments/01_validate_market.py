@@ -5,7 +5,7 @@ moments (mean and variance). Plots a histogram of terminal log-returns against
 the theoretical normal density, plus a panel of sample paths.
 
 Outputs:
-    plots/01_gbm_moments.png
+    results/plots/01_gbm_moments.png
 
 Prints to stdout:
     Empirical vs theoretical mean and variance with standard errors.
@@ -29,7 +29,7 @@ SEED = 42
 N_PATHS = 50_000
 T_VAL = 1.0  # use T=1.0 for richer moment validation (not config.T=0.5)
 N_SAMPLE_PATHS = 30  # paths to draw in the right panel
-PLOT_PATH = "plots/01_gbm_moments.png"
+PLOT_PATH = "results/plots/01_gbm_moments.png"
 
 
 def main() -> None:

@@ -9,7 +9,7 @@ Gate criterion: mean absolute deviation (MAD) between learned and BS delta
 must be < 0.05 across all (path, step) states in the evaluation set.
 
 Outputs:
-    plots/03_learned_vs_bs_delta.png   (scatter + loss curve)
+    results/plots/03_learned_vs_bs_delta.png   (scatter + loss curve)
 
 Prints to stdout:
     Training loss progression, final MAD, pass/fail verdict.
@@ -38,7 +38,7 @@ N_TRAIN_PATHS = 20_000
 N_TRAIN_EPOCHS = 300
 N_EVAL_PATHS = 20_000
 MAD_GATE = 0.05                   # maximum acceptable mean absolute deviation
-PLOT_PATH = "plots/03_learned_vs_bs_delta.png"
+PLOT_PATH = "results/plots/03_learned_vs_bs_delta.png"
 
 
 def collect_deltas(
