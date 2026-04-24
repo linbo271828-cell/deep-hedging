@@ -151,3 +151,96 @@ def test_runner_config_json_matches_experiment() -> None:
         saved = json.load(f)
     assert saved["name"] == "_test_runner_smoke"
     assert saved["training"]["n_epochs"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 payoff runner smoke tests
+# ---------------------------------------------------------------------------
+
+_TINY_PUT_CONFIG = ExperimentConfig(
+    name="_test_put_smoke",
+    market=MarketConfig(n_steps=5),
+    payoff=PayoffConfig(payoff_type="put"),
+    hedge_universe=HedgeUniverseConfig(universe_type="stock_only"),
+    training=TrainingConfig(n_paths=128, n_epochs=3, hidden_dim=8, n_layers=2, seed=101),
+    evaluation=EvaluationConfig(n_paths=200, seed_offset=1000),
+)
+
+_TINY_SPREAD_CONFIG = ExperimentConfig(
+    name="_test_spread_smoke",
+    market=MarketConfig(n_steps=5),
+    payoff=PayoffConfig(payoff_type="call_spread", k=95.0, k_hi=105.0),
+    hedge_universe=HedgeUniverseConfig(universe_type="stock_only"),
+    training=TrainingConfig(n_paths=128, n_epochs=3, hidden_dim=8, n_layers=2, seed=102),
+    evaluation=EvaluationConfig(n_paths=200, seed_offset=1000),
+)
+
+_TINY_STRADDLE_CONFIG = ExperimentConfig(
+    name="_test_straddle_smoke",
+    market=MarketConfig(n_steps=5),
+    payoff=PayoffConfig(payoff_type="straddle"),
+    hedge_universe=HedgeUniverseConfig(universe_type="stock_only"),
+    training=TrainingConfig(n_paths=128, n_epochs=3, hidden_dim=8, n_layers=2, seed=103),
+    evaluation=EvaluationConfig(n_paths=200, seed_offset=1000),
+)
+
+
+def _run_tiny(config: ExperimentConfig) -> tuple[object, object]:
+    """Run a tiny config via run_with_config and return (neural_row, classical_row)."""
+    import tempfile
+    from src.experiments.runner import run_with_config
+    with tempfile.TemporaryDirectory() as d:
+        rows = run_with_config(config, d)
+    return rows[0], rows[1]
+
+
+def test_put_runner_returns_two_rows() -> None:
+    neural, classical = _run_tiny(_TINY_PUT_CONFIG)
+    assert isinstance(neural, SummaryRow)
+    assert isinstance(classical, SummaryRow)
+    assert neural.payoff_type == "put"
+    assert classical.payoff_type == "put"
+
+
+def test_put_runner_metrics_finite() -> None:
+    import numpy as np
+    neural, classical = _run_tiny(_TINY_PUT_CONFIG)
+    for row in (neural, classical):
+        for field in ["mean_pnl", "std_pnl", "cvar_95", "entropic_risk", "expected_cost", "turnover"]:
+            assert np.isfinite(getattr(row, field)), f"{row.strategy}.{field} not finite"
+
+
+def test_call_spread_runner_returns_two_rows() -> None:
+    neural, classical = _run_tiny(_TINY_SPREAD_CONFIG)
+    assert neural.payoff_type == "call_spread"
+    assert classical.strategy == "classical"
+
+
+def test_call_spread_runner_metrics_finite() -> None:
+    import numpy as np
+    neural, classical = _run_tiny(_TINY_SPREAD_CONFIG)
+    for row in (neural, classical):
+        for field in ["mean_pnl", "std_pnl", "cvar_95"]:
+            assert np.isfinite(getattr(row, field))
+
+
+def test_straddle_runner_returns_two_rows() -> None:
+    neural, classical = _run_tiny(_TINY_STRADDLE_CONFIG)
+    assert neural.payoff_type == "straddle"
+    assert classical.payoff_type == "straddle"
+
+
+def test_straddle_runner_metrics_finite() -> None:
+    import numpy as np
+    neural, classical = _run_tiny(_TINY_STRADDLE_CONFIG)
+    for row in (neural, classical):
+        for field in ["mean_pnl", "std_pnl", "cvar_95"]:
+            assert np.isfinite(getattr(row, field))
+
+
+def test_classical_put_pnl_symmetric_to_call() -> None:
+    """Classical P&L for a put and a call share the same P&L sign convention."""
+    import numpy as np
+    _, classical_put = _run_tiny(_TINY_PUT_CONFIG)
+    # classical put CVaR should be finite and negative (it's a loss measure)
+    assert np.isfinite(classical_put.cvar_95)

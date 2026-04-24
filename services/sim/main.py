@@ -45,10 +45,11 @@ from src.experiments.configs import (
     TrainingConfig,
 )
 from src.experiments.runner import run_with_config
-from src.hedging.baseline import classical_delta_pnl
+from src.hedging.baseline import classical_delta_pnl_generalized
 from src.models.gbm import GBM, time_grid as make_time_grid
 from src.neural.architectures import HedgeNet
 from src.neural.evaluate import evaluate_raw
+from src.payoffs.dispatch import get_payoff_spec
 from src.payoffs.european import call_delta, call_price
 from src.utils.seeds import derive_seed
 
@@ -125,6 +126,85 @@ PRESETS: dict[str, dict[str, Any]] = {
             evaluation=_FAST_EVAL,
         ),
     },
+    "gbm_put_5bps": {
+        "id": "gbm_put_5bps",
+        "name": "GBM Put — 5 bps Cost",
+        "description": (
+            "Neural hedger for a short European put with 5 bps costs. "
+            "Classical benchmark: BS put delta N(d₁)−1 ∈ [−1, 0]. "
+            "The network output is shifted (sigmoid − 1) to match this range. "
+            "Demonstrates deep hedging generalizes beyond calls."
+        ),
+        "cost_rate": 0.0005,
+        "market_model": "GBM",
+        "payoff_type": "European Put",
+        "hedge_universe": "Stock Only",
+        "n_epochs": 40,
+        "est_seconds": 35,
+        "config": ExperimentConfig(
+            name="gbm_put_5bps",
+            market=MarketConfig(),
+            payoff=PayoffConfig(payoff_type="put"),
+            hedge_universe=HedgeUniverseConfig(universe_type="stock_only"),
+            training=TrainingConfig(
+                n_paths=8_000, n_epochs=40, hidden_dim=32, n_layers=3,
+                seed=44, cost_rate=0.0005,
+            ),
+            evaluation=_FAST_EVAL,
+        ),
+    },
+    "gbm_call_spread_5bps": {
+        "id": "gbm_call_spread_5bps",
+        "name": "GBM Bull Call Spread — 5 bps Cost",
+        "description": (
+            "Neural hedger for a short bull call spread (long K=95, short K=105) with 5 bps costs. "
+            "Classical benchmark: net BS delta = call_delta(95) − call_delta(105) ∈ [0, 1]. "
+            "The bounded payoff profile reduces tail risk vs. a naked call."
+        ),
+        "cost_rate": 0.0005,
+        "market_model": "GBM",
+        "payoff_type": "Bull Call Spread",
+        "hedge_universe": "Stock Only",
+        "n_epochs": 40,
+        "est_seconds": 35,
+        "config": ExperimentConfig(
+            name="gbm_call_spread_5bps",
+            market=MarketConfig(),
+            payoff=PayoffConfig(payoff_type="call_spread", k=95.0, k_hi=105.0),
+            hedge_universe=HedgeUniverseConfig(universe_type="stock_only"),
+            training=TrainingConfig(
+                n_paths=8_000, n_epochs=40, hidden_dim=32, n_layers=3,
+                seed=45, cost_rate=0.0005,
+            ),
+            evaluation=_FAST_EVAL,
+        ),
+    },
+    "gbm_straddle_5bps": {
+        "id": "gbm_straddle_5bps",
+        "name": "GBM Straddle — 5 bps Cost",
+        "description": (
+            "Neural hedger for a short straddle (long call + long put at K=100) with 5 bps costs. "
+            "Classical benchmark: net BS delta = 2·N(d₁)−1 ∈ [−1, 1], near 0 ATM. "
+            "The straddle profits from volatility; the neural hedger must manage the symmetric risk."
+        ),
+        "cost_rate": 0.0005,
+        "market_model": "GBM",
+        "payoff_type": "Straddle",
+        "hedge_universe": "Stock Only",
+        "n_epochs": 40,
+        "est_seconds": 35,
+        "config": ExperimentConfig(
+            name="gbm_straddle_5bps",
+            market=MarketConfig(),
+            payoff=PayoffConfig(payoff_type="straddle"),
+            hedge_universe=HedgeUniverseConfig(universe_type="stock_only"),
+            training=TrainingConfig(
+                n_paths=8_000, n_epochs=40, hidden_dim=32, n_layers=3,
+                seed=46, cost_rate=0.0005,
+            ),
+            evaluation=_FAST_EVAL,
+        ),
+    },
 }
 
 _PRESET_LIST = [
@@ -165,23 +245,23 @@ def _generate_pnl_plot(out_dir: str, config: ExperimentConfig) -> str:
     tc = config.training
     ec = config.evaluation
 
+    spec = get_payoff_spec(config.payoff, mc)
+
     # Load trained model
     model = HedgeNet(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
     checkpoint_path = os.path.join(out_dir, "model_checkpoint.pt")
     model.load_state_dict(torch.load(checkpoint_path, map_location="cpu", weights_only=True))
 
     # Neural P&L
-    _, neural_pnl = evaluate_raw(model, mc, tc, ec)
+    _, neural_pnl = evaluate_raw(model, mc, tc, ec, payoff_config=config.payoff)
 
     # Classical P&L (same eval paths via same seed)
     eval_seed = derive_seed(tc.seed + ec.seed_offset, "eval")
     gbm = GBM(s0=mc.s0, mu=mc.r, sigma=mc.sigma)
     paths = gbm.sample_paths(n_paths=ec.n_paths, n_steps=mc.n_steps, T=mc.T, seed=eval_seed)
     tg = make_time_grid(mc.n_steps, mc.T)
-    iop = float(call_price(mc.s0, mc.k, mc.r, mc.sigma, mc.T))
-    classical_pnl = classical_delta_pnl(
-        paths=paths, time_grid=tg, k=mc.k, r=mc.r,
-        sigma=mc.sigma, cost_rate=tc.cost_rate, initial_option_price=iop,
+    classical_pnl = classical_delta_pnl_generalized(
+        paths=paths, time_grid=tg, payoff_spec=spec, cost_rate=tc.cost_rate,
     )
 
     # Histogram
@@ -367,7 +447,7 @@ _N_TAU = 30  # time-to-maturity axis points
 
 
 def _compute_surface_data(out_dir: str) -> dict[str, Any]:
-    """Compute BS, neural, and difference hedge surfaces over a (S, τ) grid.
+    """Compute classical, neural, and difference hedge surfaces over a (S, τ) grid.
 
     Design notes
     ------------
@@ -378,6 +458,8 @@ def _compute_surface_data(out_dir: str) -> dict[str, Any]:
     - Stock axis spans [0.6·S₀, 1.6·S₀] — deep ITM to deep OTM.
     - τ axis spans [T/n_steps, T] — one step before expiry to full maturity.
     - Grid size: _N_S × _N_TAU = 1200 points; ~0.1 s for 32-dim HedgeNet.
+    - The classical benchmark delta is payoff-aware: call → N(d₁),
+      put → N(d₁)−1, spread → net delta, straddle → 2N(d₁)−1.
     """
     config_path = os.path.join(out_dir, "config.json")
     checkpoint_path = os.path.join(out_dir, "model_checkpoint.pt")
@@ -387,16 +469,19 @@ def _compute_surface_data(out_dir: str) -> dict[str, Any]:
 
     mc = MarketConfig(**cfg["market"])
     tc = TrainingConfig(**cfg["training"])
+    pc = PayoffConfig(**cfg["payoff"])
+
+    spec = get_payoff_spec(pc, mc)
 
     # Build grid
     s_vals = np.linspace(0.6 * mc.s0, 1.6 * mc.s0, _N_S)
     tau_vals = np.linspace(mc.T / mc.n_steps, mc.T, _N_TAU)
     S, TAU = np.meshgrid(s_vals, tau_vals)  # both shape (_N_TAU, _N_S)
 
-    # Black-Scholes delta surface (vectorised, analytic)
-    Z_bs = np.asarray(call_delta(S, mc.k, mc.r, mc.sigma, TAU), dtype=float)
+    # Classical delta surface (payoff-aware, vectorised)
+    Z_bs = np.asarray(spec.classical_delta_fn(S, TAU), dtype=float)
 
-    # Neural hedge surface — prev_delta fixed at 0
+    # Neural hedge surface — prev_delta fixed at 0, delta transform applied
     model = HedgeNet(n_layers=tc.n_layers, hidden_dim=tc.hidden_dim)
     model.load_state_dict(
         torch.load(checkpoint_path, map_location="cpu", weights_only=True)
@@ -408,7 +493,8 @@ def _compute_surface_data(out_dir: str) -> dict[str, Any]:
         tau_flat = torch.tensor(TAU.flatten(), dtype=torch.float32)
         prev_delta = torch.zeros(_N_S * _N_TAU, dtype=torch.float32)
         feats = torch.stack([s_norm, tau_flat, prev_delta], dim=1)
-        Z_neural = model(feats).numpy().reshape(_N_TAU, _N_S)
+        raw = model(feats)
+        Z_neural = spec.delta_transform(raw).numpy().reshape(_N_TAU, _N_S)
 
     Z_diff = Z_neural - Z_bs
 
@@ -428,8 +514,12 @@ def _compute_surface_data(out_dir: str) -> dict[str, Any]:
             "sigma": mc.sigma,
             "T": mc.T,
             "cost_rate": tc.cost_rate,
+            "payoff_type": pc.payoff_type,
+            "classical_description": spec.classical_description,
             "n_s": _N_S,
             "n_tau": _N_TAU,
+            "z_min_bs": float(Z_bs.min()),
+            "z_max_bs": float(Z_bs.max()),
             "prev_delta_assumption": (
                 "fixed at 0 — static slice: what would the neural hedger do "
                 "starting from a flat (unhedged) position?"

@@ -286,3 +286,77 @@ def test_surface_diff_equals_neural_minus_bs() -> None:
     z_neural = np.array(surface["z_neural"])
     z_diff = np.array(surface["z_diff"])
     np.testing.assert_allclose(z_diff, z_neural - z_bs, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 preset tests
+# ---------------------------------------------------------------------------
+
+def test_presets_include_new_payoff_types() -> None:
+    """Phase 3 presets for put, spread, and straddle must appear."""
+    res = client.get("/api/presets")
+    ids = {p["id"] for p in res.json()}
+    assert "gbm_put_5bps" in ids, f"gbm_put_5bps missing from {ids}"
+    assert "gbm_call_spread_5bps" in ids, f"gbm_call_spread_5bps missing from {ids}"
+    assert "gbm_straddle_5bps" in ids, f"gbm_straddle_5bps missing from {ids}"
+
+
+def test_presets_total_count_at_least_five() -> None:
+    res = client.get("/api/presets")
+    assert len(res.json()) >= 5
+
+
+def test_put_preset_fields() -> None:
+    res = client.get("/api/presets")
+    put_preset = next((p for p in res.json() if p["id"] == "gbm_put_5bps"), None)
+    assert put_preset is not None
+    assert put_preset["cost_rate"] == pytest.approx(0.0005)
+    assert "Put" in put_preset["payoff_type"] or "put" in put_preset["payoff_type"].lower()
+
+
+def test_spread_preset_fields() -> None:
+    res = client.get("/api/presets")
+    spread_preset = next((p for p in res.json() if p["id"] == "gbm_call_spread_5bps"), None)
+    assert spread_preset is not None
+    assert spread_preset["cost_rate"] == pytest.approx(0.0005)
+
+
+def test_straddle_preset_fields() -> None:
+    res = client.get("/api/presets")
+    straddle_preset = next((p for p in res.json() if p["id"] == "gbm_straddle_5bps"), None)
+    assert straddle_preset is not None
+    assert straddle_preset["cost_rate"] == pytest.approx(0.0005)
+
+
+def test_create_put_run_returns_202() -> None:
+    from services.sim import main as sim_main
+    original = sim_main._run_worker
+    sim_main._run_worker = lambda run_id, preset: None  # type: ignore[assignment]
+    try:
+        res = client.post("/api/runs", json={"preset_id": "gbm_put_5bps"})
+        assert res.status_code == 202
+        assert "run_id" in res.json()
+    finally:
+        sim_main._run_worker = original  # type: ignore[assignment]
+
+
+def test_create_spread_run_returns_202() -> None:
+    from services.sim import main as sim_main
+    original = sim_main._run_worker
+    sim_main._run_worker = lambda run_id, preset: None  # type: ignore[assignment]
+    try:
+        res = client.post("/api/runs", json={"preset_id": "gbm_call_spread_5bps"})
+        assert res.status_code == 202
+    finally:
+        sim_main._run_worker = original  # type: ignore[assignment]
+
+
+def test_create_straddle_run_returns_202() -> None:
+    from services.sim import main as sim_main
+    original = sim_main._run_worker
+    sim_main._run_worker = lambda run_id, preset: None  # type: ignore[assignment]
+    try:
+        res = client.post("/api/runs", json={"preset_id": "gbm_straddle_5bps"})
+        assert res.status_code == 202
+    finally:
+        sim_main._run_worker = original  # type: ignore[assignment]

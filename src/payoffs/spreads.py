@@ -1,18 +1,12 @@
-"""Vertical spread payoffs — STUB, not yet implemented.
+"""Vertical spread payoffs for Deep Hedging Lab.
 
-Lane C (payoffs and baselines) owns this file.
-Implement after the European-call baseline migration is complete (Phase B).
+A bull call spread is long a call at k_lo and short a call at k_hi (k_lo < k_hi).
+A bear put spread is long a put at k_hi and short a put at k_lo (k_lo < k_hi).
 
-A vertical spread is long one call at strike k_lo and short one call at k_hi
-(k_lo < k_hi), or equivalently for puts.
-
-Target public interface:
-    call_spread_payoff(s_T, k_lo, k_hi) -> ndarray | float
-    put_spread_payoff(s_T, k_lo, k_hi) -> ndarray | float
-
-No closed-form BS delta exists for a spread in general (it is the difference of
-two BS deltas), so the classical baseline for spreads is the *component-wise*
-BS delta hedge.  See src/hedging/baseline.py for details.
+Classical benchmark (no single BS delta):
+    The net BS delta is call_delta(k_lo) − call_delta(k_hi) for the call spread,
+    or put_delta(k_hi) − put_delta(k_lo) for the put spread.
+    These are computed in src/payoffs/dispatch.py, not here.
 """
 
 from __future__ import annotations
@@ -23,24 +17,14 @@ import numpy as np
 def call_spread_payoff(
     s_T: np.ndarray | float, k_lo: float, k_hi: float
 ) -> np.ndarray | float:
-    """Bull call spread terminal payoff: max(S_T-k_lo,0) - max(S_T-k_hi,0).
-
-    STUB — not yet implemented.
-    """
-    raise NotImplementedError(
-        "call_spread_payoff is not yet implemented. "
-        "See writeup/implementation_plan.md Phase 2."
-    )
+    """Bull call spread terminal payoff: max(S_T−k_lo,0) − max(S_T−k_hi,0)."""
+    s = np.asarray(s_T)
+    return np.maximum(s - k_lo, 0.0) - np.maximum(s - k_hi, 0.0)
 
 
 def put_spread_payoff(
     s_T: np.ndarray | float, k_lo: float, k_hi: float
 ) -> np.ndarray | float:
-    """Bear put spread terminal payoff: max(k_hi-S_T,0) - max(k_lo-S_T,0).
-
-    STUB — not yet implemented.
-    """
-    raise NotImplementedError(
-        "put_spread_payoff is not yet implemented. "
-        "See writeup/implementation_plan.md Phase 2."
-    )
+    """Bear put spread terminal payoff: max(k_hi−S_T,0) − max(k_lo−S_T,0)."""
+    s = np.asarray(s_T)
+    return np.maximum(k_hi - s, 0.0) - np.maximum(k_lo - s, 0.0)

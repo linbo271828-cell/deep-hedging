@@ -34,17 +34,14 @@ interface ModeConfig {
   caption: string;
 }
 
-const MODE_CONFIG: Record<Mode, ModeConfig> = {
+const BASE_MODE_CONFIG: Record<Mode, Omit<ModeConfig, "fixedZRange" | "caption">> = {
   bs: {
-    label: "Black-Scholes Δ",
-    shortLabel: "BS Δ",
+    label: "Classical Δ",
+    shortLabel: "Classical Δ",
     zKey: "z_bs",
     colorscale: "Viridis",
     reverseScale: false,
-    title: "Black-Scholes Delta Surface",
-    fixedZRange: [0, 1],
-    caption:
-      "Analytic BS delta Δ(S, τ) = N(d₁). Exact closed-form hedge ratio at each (stock price, time to maturity) state.",
+    title: "Classical Benchmark Delta Surface",
   },
   neural: {
     label: "Neural Hedge",
@@ -53,25 +50,14 @@ const MODE_CONFIG: Record<Mode, ModeConfig> = {
     colorscale: "Viridis",
     reverseScale: false,
     title: "Neural Hedge Surface",
-    fixedZRange: [0, 1],
-    caption:
-      "Neural hedge ratio output by the trained HedgeNet at each grid state with prev_delta = 0. " +
-      "Under zero cost this should approximate BS delta; under positive cost the surface tilts " +
-      "to reduce unnecessary rebalancing.",
   },
   diff: {
-    label: "Difference  (Neural − BS)",
-    shortLabel: "Δ Neural − BS",
+    label: "Difference  (Neural − Classical)",
+    shortLabel: "Neural − Classical",
     zKey: "z_diff",
     colorscale: "RdBu",
     reverseScale: true,
-    title: "Difference Surface: Neural − Black-Scholes",
-    fixedZRange: null,
-    caption:
-      "Signed deviation of the neural hedge from BS delta. " +
-      "Blue regions: neural under-hedges relative to BS. " +
-      "Red regions: neural over-hedges. " +
-      "Under non-zero costs the network deliberately deviates near the boundary to avoid excessive friction.",
+    title: "Difference Surface: Neural − Classical",
   },
 };
 
@@ -96,6 +82,48 @@ const SCENE_STYLE = {
 
 export function HedgeSurface({ data }: { data: SurfaceData }) {
   const [mode, setMode] = useState<Mode>("neural");
+  const base = BASE_MODE_CONFIG[mode];
+
+  // Build payoff-aware mode config from data metadata
+  const zMin = data.metadata.z_min_bs;
+  const zMax = data.metadata.z_max_bs;
+  // Snap to well-known ranges when data is near [0,1] or [-1,0] or [-1,1]
+  const bsRange: [number, number] =
+    zMin >= -0.05 && zMax <= 1.05
+      ? [Math.min(0, zMin), Math.max(1, zMax)]
+      : [Math.floor(zMin * 10) / 10, Math.ceil(zMax * 10) / 10];
+
+  const classicalDesc = data.metadata.classical_description ||
+    "Classical delta benchmark";
+
+  const MODE_CONFIG: Record<Mode, ModeConfig> = {
+    bs: {
+      ...base,
+      ...BASE_MODE_CONFIG.bs,
+      fixedZRange: bsRange,
+      caption: `Classical benchmark: ${classicalDesc}. Analytic closed-form hedge ratio at each (stock price, time to maturity) state.`,
+    },
+    neural: {
+      ...base,
+      ...BASE_MODE_CONFIG.neural,
+      fixedZRange: bsRange,
+      caption:
+        "Neural hedge ratio output by the trained HedgeNet at each grid state with prev_delta = 0. " +
+        "Under zero cost this should approximate the classical delta; under positive cost the surface tilts " +
+        "to reduce unnecessary rebalancing.",
+    },
+    diff: {
+      ...base,
+      ...BASE_MODE_CONFIG.diff,
+      fixedZRange: null,
+      caption:
+        "Signed deviation of the neural hedge from the classical benchmark. " +
+        "Blue regions: neural under-hedges relative to classical. " +
+        "Red regions: neural over-hedges. " +
+        "Under non-zero costs the network deliberately deviates to avoid excessive friction.",
+    },
+  };
+
   const cfg = MODE_CONFIG[mode];
   const z = data[cfg.zKey];
 
@@ -212,8 +240,10 @@ export function HedgeSurface({ data }: { data: SurfaceData }) {
         }}
       >
         <Plot
-          data={[plotTrace] as Plotly.Data[]}
-          layout={layout as Partial<Plotly.Layout>}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          data={[plotTrace] as any[]}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          layout={layout as any}
           config={{
             displayModeBar: true,
             modeBarButtonsToRemove: [
@@ -221,7 +251,7 @@ export function HedgeSurface({ data }: { data: SurfaceData }) {
               "sendDataToCloud",
               "select2d",
               "lasso2d",
-            ] as Plotly.ModeBarButtonAny[],
+            ] as string[],
             displaylogo: false,
             responsive: true,
           }}
@@ -253,7 +283,9 @@ export function HedgeSurface({ data }: { data: SurfaceData }) {
           <strong style={{ color: "#94a3b8" }}>Grid:</strong>{" "}
           {data.metadata.n_s} × {data.metadata.n_tau} states.{" "}
           <strong style={{ color: "#94a3b8" }}>Fixed slice:</strong>{" "}
-          prev_delta = 0.
+          prev_delta = 0.{" "}
+          <strong style={{ color: "#94a3b8" }}>Classical benchmark:</strong>{" "}
+          {classicalDesc}.
         </span>
       </div>
     </div>

@@ -20,7 +20,7 @@ from src.risk.entropic import entropic_risk as entropic_risk_fn
 from src.utils.seeds import derive_seed
 
 if TYPE_CHECKING:
-    from src.experiments.configs import EvaluationConfig, MarketConfig, TrainingConfig
+    from src.experiments.configs import EvaluationConfig, MarketConfig, PayoffConfig, TrainingConfig
     from src.neural.architectures import HedgeNet
 
 
@@ -42,7 +42,7 @@ class EvaluationResult:
 
 
 def _compute_pnl_numpy(
-    model: HedgeNet,
+    model: "HedgeNet",
     paths: np.ndarray,
     s0: float,
     k: float,
@@ -51,11 +51,16 @@ def _compute_pnl_numpy(
     n_steps: int,
     cost_rate: float,
     initial_option_price: float,
+    payoff_fn: object = None,
+    delta_transform: object = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run model inference on paths and return (pnl, total_cost, turnover) arrays.
 
     Mirrors the accounting in src/hedging/pnl.hedge_pnl and src/neural/train._compute_pnl.
     Uses NumPy + torch.no_grad inference — no gradient tracking.
+
+    payoff_fn: callable(s_T np.ndarray) -> np.ndarray.  None = European call.
+    delta_transform: callable(model_output np.ndarray) -> np.ndarray.  None = identity.
     """
     n_paths_count = paths.shape[0]
     dt = T / n_steps
@@ -76,11 +81,12 @@ def _compute_pnl_numpy(
             [s_curr / s0, torch.full((n_paths_count,), tau_curr), delta_prev],
             dim=1,
         )
-        delta = model(feats)
+        raw = model(feats)
+        delta = delta_transform(raw) if delta_transform is not None else raw
 
-        cost0 = (delta * s_curr * cost_rate).numpy()
+        cost0 = (torch.abs(delta) * s_curr * cost_rate).numpy()
         total_cost += cost0
-        total_turnover += delta.numpy()  # initial purchase counts as turnover
+        total_turnover += np.abs(delta.numpy())
 
         cash = initial_option_price - (delta * s_curr).numpy() - cost0
         cash = cash * compound
@@ -99,7 +105,12 @@ def _compute_pnl_numpy(
                 ],
                 dim=1,
             )
-            delta_new = model(feats).numpy()
+            raw_new = model(feats)
+            delta_new = (
+                delta_transform(raw_new).numpy()
+                if delta_transform is not None
+                else raw_new.numpy()
+            )
 
             trade = delta_new - delta_np
             cost_i = np.abs(trade) * s_curr_np * cost_rate
@@ -116,22 +127,29 @@ def _compute_pnl_numpy(
         total_turnover += np.abs(delta_np)
 
         cash = cash + delta_np * s_T - liquidation_cost
-        payoff = np.maximum(s_T - k, 0.0)
+        payoff = payoff_fn(s_T) if payoff_fn is not None else np.maximum(s_T - k, 0.0)
         pnl = cash - payoff
 
     return pnl, total_cost, total_turnover
 
 
 def evaluate_raw(
-    model: HedgeNet,
-    market_config: MarketConfig,
-    training_config: TrainingConfig,
-    eval_config: EvaluationConfig,
+    model: "HedgeNet",
+    market_config: "MarketConfig",
+    training_config: "TrainingConfig",
+    eval_config: "EvaluationConfig",
+    payoff_config: "PayoffConfig | None" = None,
 ) -> tuple[EvaluationResult, np.ndarray]:
     """Like evaluate(), but also returns the raw terminal P&L array.
 
     Used by downstream consumers (e.g. web backend) to generate P&L distribution plots
     without re-running evaluation.
+
+    Parameters
+    ----------
+    payoff_config:
+        If provided (and not "call"), uses the generalized payoff dispatch.
+        None defaults to European call for backward compatibility.
 
     Returns
     -------
@@ -147,15 +165,24 @@ def evaluate_raw(
         seed=eval_seed,
     )
 
-    initial_option_price = float(
-        call_price(
-            market_config.s0,
-            market_config.k,
-            market_config.r,
-            market_config.sigma,
-            market_config.T,
+    if payoff_config is not None and payoff_config.payoff_type != "call":
+        from src.payoffs.dispatch import get_payoff_spec
+        spec = get_payoff_spec(payoff_config, market_config)
+        initial_option_price = spec.initial_option_price
+        payoff_fn = spec.payoff_fn
+        delta_transform = spec.delta_transform
+    else:
+        initial_option_price = float(
+            call_price(
+                market_config.s0,
+                market_config.k,
+                market_config.r,
+                market_config.sigma,
+                market_config.T,
+            )
         )
-    )
+        payoff_fn = None
+        delta_transform = None
 
     pnl, total_cost, total_turnover = _compute_pnl_numpy(
         model=model,
@@ -167,6 +194,8 @@ def evaluate_raw(
         n_steps=market_config.n_steps,
         cost_rate=training_config.cost_rate,
         initial_option_price=initial_option_price,
+        payoff_fn=payoff_fn,
+        delta_transform=delta_transform,
     )
 
     result = EvaluationResult(
@@ -182,10 +211,11 @@ def evaluate_raw(
 
 
 def evaluate(
-    model: HedgeNet,
-    market_config: MarketConfig,
-    training_config: TrainingConfig,
-    eval_config: EvaluationConfig,
+    model: "HedgeNet",
+    market_config: "MarketConfig",
+    training_config: "TrainingConfig",
+    eval_config: "EvaluationConfig",
+    payoff_config: "PayoffConfig | None" = None,
 ) -> EvaluationResult:
     """Evaluate a trained neural hedger on fresh held-out paths.
 
@@ -208,5 +238,5 @@ def evaluate(
     EvaluationResult
         All standard metrics computed on eval_config.n_paths held-out paths.
     """
-    result, _ = evaluate_raw(model, market_config, training_config, eval_config)
+    result, _ = evaluate_raw(model, market_config, training_config, eval_config, payoff_config)
     return result

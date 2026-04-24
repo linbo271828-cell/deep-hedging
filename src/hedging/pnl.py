@@ -33,6 +33,7 @@ def hedge_pnl(
     sigma: float,
     cost_rate: float,
     initial_option_price: float,
+    payoff_fn: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> np.ndarray:
     """Simulate P&L for a delta-hedging strategy on a short call position.
 
@@ -45,7 +46,7 @@ def hedge_pnl(
     time_grid:
         Uniform time points [0, T], shape (n_steps + 1,).
     k:
-        Strike price.
+        Strike price (used only when payoff_fn is None — default call payoff).
     r:
         Risk-free rate (continuous compounding).
     sigma:
@@ -53,7 +54,10 @@ def hedge_pnl(
     cost_rate:
         Proportional transaction cost per unit of notional traded (e.g. 0.0005 = 5 bps).
     initial_option_price:
-        Premium received at t=0 for selling the call.
+        Premium received at t=0 for selling the option.
+    payoff_fn:
+        Terminal payoff callable: payoff_fn(s_T) -> np.ndarray, shape (n_paths,).
+        If None, defaults to European call payoff: max(s_T - k, 0).
 
     Returns
     -------
@@ -88,7 +92,7 @@ def hedge_pnl(
     liquidation_cost = proportional_cost(delta, s_T, cost_rate)
     cash = cash + delta * s_T - liquidation_cost
 
-    payoff = np.maximum(s_T - k, 0.0)
+    payoff = payoff_fn(s_T) if payoff_fn is not None else np.maximum(s_T - k, 0.0)
     cash = cash - payoff
 
     return cash

@@ -72,8 +72,12 @@ export interface SurfaceData {
     sigma: number;
     T: number;
     cost_rate: number;
+    payoff_type: string;
+    classical_description: string;
     n_s: number;
     n_tau: number;
+    z_min_bs: number;
+    z_max_bs: number;
     prev_delta_assumption: string;
   };
 }

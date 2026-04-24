@@ -10,10 +10,56 @@ with a docstring explanation).  Never silently apply an incorrect baseline.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from src.hedging.pnl import hedge_pnl
 from src.payoffs import european as bs
+
+if TYPE_CHECKING:
+    from src.payoffs.dispatch import PayoffSpec
+
+
+def classical_delta_pnl_generalized(
+    paths: np.ndarray,
+    time_grid: np.ndarray,
+    payoff_spec: "PayoffSpec",
+    cost_rate: float,
+) -> np.ndarray:
+    """Delta-hedge a short option position using the payoff spec's classical delta.
+
+    Works for any payoff type registered in src/payoffs/dispatch.py.
+    The classical_delta_fn and payoff_fn are taken from the PayoffSpec so that
+    the benchmark is always consistent with the training payoff.
+
+    Parameters
+    ----------
+    paths:
+        Asset price paths, shape (n_paths, n_steps + 1).
+    time_grid:
+        Uniform time points [0, T], shape (n_steps + 1,).
+    payoff_spec:
+        PayoffSpec from get_payoff_spec(payoff_config, market_config).
+    cost_rate:
+        Proportional transaction cost per unit of notional traded.
+
+    Returns
+    -------
+    np.ndarray
+        Terminal P&L per path, shape (n_paths,).
+    """
+    return hedge_pnl(
+        paths=paths,
+        delta_fn=payoff_spec.classical_delta_fn,
+        time_grid=time_grid,
+        k=0.0,
+        r=0.0,
+        sigma=0.0,
+        cost_rate=cost_rate,
+        initial_option_price=payoff_spec.initial_option_price,
+        payoff_fn=payoff_spec.payoff_fn,
+    )
 
 
 def classical_delta_pnl(
